@@ -234,8 +234,8 @@ def make_plot(
     return fig
 
 
-st.title("Distortions: first Streamlit demo")
-st.caption("Explore how a 2D embedding stretches local geometry and breaks original-space neighborhoods.")
+st.title("Visualizing Distortions in Low-Dimensional Embeddings")
+st.caption("Interactive companion demo for explaining local metric distortion and broken neighborhoods.")
 
 with st.sidebar:
     st.header("Controls")
@@ -282,19 +282,19 @@ with left:
 
 with right:
     broken_count = int(links["broken"].sum())
-    st.metric("Broken links", f"{broken_count:,}", f"{broken_count / max(len(links), 1):.1%}")
+    st.metric("Flagged neighbor links", f"{broken_count:,}", f"{broken_count / max(len(links), 1):.1%}")
     st.metric("Median axis ratio", f"{metrics['distortion_ratio'].median():.2f}")
     st.metric("95th pct axis ratio", f"{metrics['distortion_ratio'].quantile(0.95):.2f}")
 
-    st.subheader("What the professor is seeing")
+    st.subheader("How to read the visualization")
     st.write(
-        "Each point is one high-dimensional sample after embedding. The small ellipses summarize the local "
-        "Riemannian metric estimated by the package: long, skinny ellipses mark regions where nearby "
-        "directions are stretched unevenly. Orange links are original-space neighbors whose embedded "
-        "distance is unusually large compared with similar true-distance pairs."
+        "Each point is one high-dimensional sample after embedding. The ellipses summarize the local "
+        "Riemannian metric estimated from the original space: elongated ellipses indicate directions "
+        "that the embedding stretches unevenly. Orange links mark original-space neighbors that are "
+        "unusually far apart in the embedding."
     )
 
-    st.subheader("Top distorted samples")
+    st.subheader("Most distorted samples")
     st.dataframe(
         metrics[["embedding_0", "embedding_1", "label", "distortion_ratio", "local_area"]]
         .sort_values("distortion_ratio", ascending=False)
