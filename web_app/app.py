@@ -240,7 +240,7 @@ st.caption("Explore how a 2D embedding stretches local geometry and breaks origi
 with st.sidebar:
     st.header("Controls")
     dataset = st.selectbox("Dataset", list(DATASET_HELP), help=DATASET_HELP["Swiss roll"])
-    n_samples = st.slider("Samples", 120, 650, 360, step=30)
+    n_samples = st.slider("Samples", 120, 650, 240, step=30)
     noise = st.slider("Noise", 0.0, 0.5, 0.08, step=0.02)
     embedding_method = st.segmented_control("Embedding", ["PCA", "Isomap", "t-SNE"], default="Isomap")
     n_neighbors = st.slider("Neighbors", 6, 40, 14)
@@ -276,7 +276,7 @@ with left:
     )
     st.plotly_chart(
         make_plot(metrics, links, color_by, ellipse_stride, ellipse_scale, show_links),
-        use_container_width=True,
+        width="stretch",
         config={"displayModeBar": True, "scrollZoom": True},
     )
 
@@ -299,5 +299,5 @@ with right:
         metrics[["embedding_0", "embedding_1", "label", "distortion_ratio", "local_area"]]
         .sort_values("distortion_ratio", ascending=False)
         .head(12),
-        use_container_width=True,
+        width="stretch",
     )

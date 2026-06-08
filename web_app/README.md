@@ -7,15 +7,14 @@ This is the first Streamlit demo for `bbag136.pdf` and the local
 ## Local run
 
 ```bash
-pip install -r web_app/requirements.txt
+pip install -r requirements.txt
 streamlit run web_app/app.py
 ```
 
 ## Streamlit Community Cloud
 
 Deploy this repository with `web_app/app.py` as the app entrypoint. The
-dependencies are declared in `web_app/requirements.txt`, which is in the same
-directory as the entrypoint file.
+dependencies are declared in the repository-level `requirements.txt`.
 
 The app imports the local package from `../distortions`, generates toy manifold
 data, computes a 2D embedding, estimates local Riemannian metric distortions,

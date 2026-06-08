@@ -173,7 +173,7 @@ def compute_G_from_H(H, mdimG=None, mode_inv="svd"):
     """
     n_samples = H.shape[0]
     n_dim = H.shape[2]
-    if mode_inv is 'svd':
+    if mode_inv == 'svd':
         Huu, Hsvals, Hvv = np.linalg.svd(H)
         if mdimG is None or mdimG == n_dim:
             # Gsvals = 1./Hsvals
