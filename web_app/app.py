@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 
@@ -7,7 +8,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from scipy.spatial.distance import cdist
 from sklearn.datasets import make_blobs, make_s_curve, make_swiss_roll
 from sklearn.decomposition import PCA
 from sklearn.manifold import Isomap, TSNE
@@ -35,6 +35,13 @@ DATASET_HELP = {
     "S-curve": "A smoother 3D manifold with visible bends and local stretching.",
     "Two clusters": "Two nearby high-dimensional groups where embeddings can exaggerate gaps.",
 }
+
+RELEASE_BASE_URL = "https://github.com/IceLake32/distortion_web_app/releases/latest/download"
+
+
+@st.cache_data(show_spinner=False)
+def read_uploaded_csv(file_bytes: bytes) -> pd.DataFrame:
+    return pd.read_csv(io.BytesIO(file_bytes))
 
 
 def _standardize_embedding(y: np.ndarray) -> np.ndarray:
@@ -65,6 +72,35 @@ def make_dataset(name: str, n_samples: int, noise: float, seed: int) -> tuple[np
     x[:, 2:] += 0.35 * rng.normal(size=x[:, 2:].shape)
     meta = pd.DataFrame({"label": np.where(labels == 0, "cluster A", "cluster B"), "manifold_position": labels})
     return StandardScaler().fit_transform(x), meta
+
+
+def prepare_uploaded_dataset(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    label_col: str | None,
+    max_rows: int,
+    seed: int,
+) -> tuple[np.ndarray, pd.DataFrame]:
+    features = df.loc[:, feature_cols].apply(pd.to_numeric, errors="coerce")
+    valid = features.replace([np.inf, -np.inf], np.nan).dropna()
+
+    if len(valid) > max_rows:
+        valid = valid.sample(n=max_rows, random_state=seed).sort_index()
+
+    x = StandardScaler().fit_transform(valid.to_numpy(dtype=float))
+
+    if label_col is not None:
+        labels = df.loc[valid.index, label_col].astype(str).fillna("missing").reset_index(drop=True)
+        manifold_position = pd.factorize(labels)[0]
+    else:
+        labels = pd.Series(["uploaded"] * len(valid))
+        manifold_position = np.arange(len(valid))
+
+    meta = pd.DataFrame({
+        "label": labels,
+        "manifold_position": manifold_position,
+    })
+    return x, meta
 
 
 def embed_data(x: np.ndarray, method: str, n_neighbors: int, perplexity: int, seed: int) -> np.ndarray:
@@ -129,9 +165,8 @@ def broken_links(dists: pd.DataFrame, n_bins: int, outlier_factor: float) -> pd.
 
 @st.cache_data(show_spinner=False)
 def run_pipeline(
-    dataset: str,
-    n_samples: int,
-    noise: float,
+    x: np.ndarray,
+    meta: pd.DataFrame,
     embedding_method: str,
     n_neighbors: int,
     affinity_radius: float,
@@ -139,7 +174,6 @@ def run_pipeline(
     outlier_factor: float,
     seed: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    x, meta = make_dataset(dataset, n_samples, noise, seed)
     y = embed_data(x, embedding_method, n_neighbors, perplexity, seed)
     metrics = compute_local_distortions(x, y, n_neighbors, affinity_radius)
     dists = neighborhood_distances(x, y, n_neighbors)
@@ -235,28 +269,76 @@ def make_plot(
 
 
 st.title("Visualizing Distortions in Low-Dimensional Embeddings")
-st.caption("Interactive companion demo for explaining local metric distortion and broken neighborhoods.")
+st.caption("No-code companion demo for applying the distortions package to built-in examples or uploaded data.")
 
 with st.sidebar:
     st.header("Controls")
-    dataset = st.selectbox("Dataset", list(DATASET_HELP), help=DATASET_HELP["Swiss roll"])
-    n_samples = st.slider("Samples", 120, 650, 240, step=30)
-    noise = st.slider("Noise", 0.0, 0.5, 0.08, step=0.02)
+    with st.expander("Download local version"):
+        st.write(
+            "For larger private datasets, download a portable version and run the app locally. "
+            "No Python installation is needed after unzipping."
+        )
+        st.link_button("Windows zip", f"{RELEASE_BASE_URL}/DistortionsDemo_Windows.zip")
+        st.link_button("macOS zip", f"{RELEASE_BASE_URL}/DistortionsDemo_macOS.zip")
+
+    data_source = st.radio("Data source", ["Built-in examples", "Upload CSV"], horizontal=True)
+    seed = st.number_input("Random seed", value=7, min_value=0, max_value=9999)
+
+    if data_source == "Built-in examples":
+        dataset = st.selectbox("Dataset", list(DATASET_HELP), help=DATASET_HELP["Swiss roll"])
+        n_samples = st.slider("Samples", 120, 650, 240, step=30)
+        noise = st.slider("Noise", 0.0, 0.5, 0.08, step=0.02)
+        x, meta = make_dataset(dataset, n_samples, noise, seed)
+    else:
+        uploaded_file = st.file_uploader("Upload data", type=["csv"])
+        if uploaded_file is None:
+            st.info("Upload a CSV file with numeric feature columns to run the distortion analysis.")
+            st.stop()
+
+        raw_df = read_uploaded_csv(uploaded_file.getvalue())
+        numeric_cols = raw_df.select_dtypes(include=np.number).columns.tolist()
+        if len(numeric_cols) < 2:
+            st.error("The uploaded CSV needs at least two numeric feature columns.")
+            st.stop()
+
+        feature_cols = st.multiselect("Feature columns", numeric_cols, default=numeric_cols)
+        if len(feature_cols) < 2:
+            st.error("Select at least two feature columns.")
+            st.stop()
+
+        label_options = ["None"] + raw_df.columns.tolist()
+        label_choice = st.selectbox("Label / reference column", label_options)
+        label_col = None if label_choice == "None" else label_choice
+
+        row_cap = min(len(raw_df), 1500)
+        default_rows = min(len(raw_df), 400)
+        if row_cap > 50:
+            max_rows = st.slider("Rows to analyze", 50, row_cap, default_rows, step=50)
+        else:
+            max_rows = row_cap
+
+        x, meta = prepare_uploaded_dataset(raw_df, feature_cols, label_col, max_rows, seed)
+        if x.shape[0] < 10:
+            st.error("After dropping missing values, at least 10 rows are needed for this demo.")
+            st.stop()
+        st.caption(f"Using {x.shape[0]} rows and {x.shape[1]} numeric features.")
+
     embedding_method = st.segmented_control("Embedding", ["PCA", "Isomap", "t-SNE"], default="Isomap")
-    n_neighbors = st.slider("Neighbors", 6, 40, 14)
+    max_neighbors = max(2, min(40, x.shape[0] - 1))
+    min_neighbors = min(6, max_neighbors)
+    default_neighbors = min(14, max_neighbors)
+    n_neighbors = st.slider("Neighbors", min_neighbors, max_neighbors, default_neighbors)
     affinity_radius = st.slider("Affinity radius", 0.2, 5.0, 1.6, step=0.1)
     perplexity = st.slider("t-SNE perplexity", 5, 80, 30)
     outlier_factor = st.slider("Broken-link sensitivity", 0.5, 4.0, 1.5, step=0.1)
     ellipse_stride = st.slider("Ellipse density", 1, 12, 5)
     ellipse_scale = st.slider("Ellipse scale", 0.01, 0.16, 0.05, step=0.01)
-    seed = st.number_input("Random seed", value=7, min_value=0, max_value=9999)
     show_links = st.toggle("Show broken neighborhood links", value=True)
 
 with st.spinner("Computing embedding and local distortion metrics..."):
     metrics, distances, links = run_pipeline(
-        dataset,
-        n_samples,
-        noise,
+        x,
+        meta,
         embedding_method,
         n_neighbors,
         affinity_radius,
