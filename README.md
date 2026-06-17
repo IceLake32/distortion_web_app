@@ -19,6 +19,33 @@ Use this repository and set the app entrypoint to:
 web_app/app.py
 ```
 
+## Uploaded Data Format
+
+The web app accepts CSV, TSV/TXT, XLSX, and XLS tables. Each row should be one
+sample.
+
+Users can either let the app compute the embedding or provide their own 2D
+embedding columns.
+
+For app-computed embeddings, the table needs at least two numeric feature
+columns:
+
+```text
+feature_1,feature_2,feature_3,label
+0.1,1.2,0.4,A
+0.3,1.0,0.5,A
+2.4,0.2,1.1,B
+```
+
+For uploaded embeddings, include two numeric embedding coordinate columns:
+
+```text
+feature_1,feature_2,feature_3,umap_1,umap_2,label
+0.1,1.2,0.4,-2.1,0.5,A
+0.3,1.0,0.5,-1.9,0.7,A
+2.4,0.2,1.1,1.4,-0.3,B
+```
+
 ## Portable No-Install Release
 
 For users who want to analyze their own data locally, build a portable zip:

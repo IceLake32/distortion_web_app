@@ -50,8 +50,16 @@ DISTORTIONS_DOCS_URL = "https://krisrs1128.github.io/distortions/site/"
 
 
 @st.cache_data(show_spinner=False)
-def read_uploaded_csv(file_bytes: bytes) -> pd.DataFrame:
-    return pd.read_csv(io.BytesIO(file_bytes))
+def read_uploaded_table(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    suffix = Path(filename).suffix.lower()
+    buffer = io.BytesIO(file_bytes)
+    if suffix == ".csv":
+        return pd.read_csv(buffer)
+    if suffix in {".tsv", ".txt"}:
+        return pd.read_csv(buffer, sep="\t")
+    if suffix in {".xls", ".xlsx"}:
+        return pd.read_excel(buffer)
+    raise ValueError(f"Unsupported file format: {suffix}")
 
 
 def _standardize_embedding(y: np.ndarray) -> np.ndarray:
@@ -88,16 +96,26 @@ def prepare_uploaded_dataset(
     df: pd.DataFrame,
     feature_cols: list[str],
     label_col: str | None,
+    embedding_cols: list[str] | None,
     max_rows: int,
     seed: int,
-) -> tuple[np.ndarray, pd.DataFrame]:
+) -> tuple[np.ndarray, pd.DataFrame, np.ndarray | None]:
     features = df.loc[:, feature_cols].apply(pd.to_numeric, errors="coerce")
-    valid = features.replace([np.inf, -np.inf], np.nan).dropna()
+    pieces = [features]
+    embedding = None
+    if embedding_cols is not None:
+        embedding = df.loc[:, embedding_cols].apply(pd.to_numeric, errors="coerce")
+        pieces.append(embedding)
+
+    valid = pd.concat(pieces, axis=1).replace([np.inf, -np.inf], np.nan).dropna()
 
     if len(valid) > max_rows:
         valid = valid.sample(n=max_rows, random_state=seed).sort_index()
 
-    x = StandardScaler().fit_transform(valid.to_numpy(dtype=float))
+    x = StandardScaler().fit_transform(valid.loc[:, feature_cols].to_numpy(dtype=float))
+    y = None
+    if embedding_cols is not None:
+        y = _standardize_embedding(valid.loc[:, embedding_cols].to_numpy(dtype=float))
 
     if label_col is not None:
         labels = df.loc[valid.index, label_col].astype(str).fillna("missing").reset_index(drop=True)
@@ -110,7 +128,7 @@ def prepare_uploaded_dataset(
         "label": labels,
         "manifold_position": manifold_position,
     })
-    return x, meta
+    return x, meta, y
 
 
 def embed_data(x: np.ndarray, method: str, n_neighbors: int, perplexity: int, seed: int) -> np.ndarray:
@@ -183,8 +201,9 @@ def run_pipeline(
     perplexity: int,
     outlier_factor: float,
     seed: int,
+    provided_embedding: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    y = embed_data(x, embedding_method, n_neighbors, perplexity, seed)
+    y = provided_embedding if provided_embedding is not None else embed_data(x, embedding_method, n_neighbors, perplexity, seed)
     metrics = compute_local_distortions(x, y, n_neighbors, affinity_radius)
     dists = neighborhood_distances(x, y, n_neighbors)
     links = broken_links(dists, n_bins=10, outlier_factor=outlier_factor)
@@ -331,17 +350,31 @@ with st.sidebar:
             help="Amount of noise added to the synthetic data before embedding.",
         )
         x, meta = make_dataset(dataset, n_samples, noise, seed)
+        provided_embedding = None
     else:
+        st.markdown(
+            """
+            **Required table format**
+
+            Each row should be one sample. Numeric columns are used as features.
+            You may also include an optional label column and optional
+            precomputed embedding coordinates, such as `umap_1` and `umap_2`.
+            """
+        )
         uploaded_file = st.file_uploader(
             "Upload data",
-            type=["csv"],
-            help="Upload a CSV file. Numeric columns can be selected as features; an optional label column can be used as the reference color.",
+            type=["csv", "tsv", "txt", "xlsx", "xls"],
+            help="Upload a table file. Supported formats: CSV, TSV/TXT, XLSX, and XLS.",
         )
         if uploaded_file is None:
-            st.info("Upload a CSV file with numeric feature columns to run the distortion analysis.")
+            st.info("Upload a table with numeric feature columns to run the distortion analysis.")
             st.stop()
 
-        raw_df = read_uploaded_csv(uploaded_file.getvalue())
+        try:
+            raw_df = read_uploaded_table(uploaded_file.getvalue(), uploaded_file.name)
+        except Exception as exc:
+            st.error(f"Could not read uploaded file: {exc}")
+            st.stop()
         numeric_cols = raw_df.select_dtypes(include=np.number).columns.tolist()
         if len(numeric_cols) < 2:
             st.error("The uploaded CSV needs at least two numeric feature columns.")
@@ -365,6 +398,31 @@ with st.sidebar:
         )
         label_col = None if label_choice == "None" else label_choice
 
+        embedding_source = st.radio(
+            "Embedding source",
+            ["Compute in app", "Use columns from file"],
+            help="Compute PCA/Isomap/t-SNE inside the app, or select existing 2D embedding coordinates from the uploaded table.",
+        )
+        embedding_cols = None
+        if embedding_source == "Use columns from file":
+            embedding_cols = st.multiselect(
+                "Embedding columns",
+                numeric_cols,
+                default=numeric_cols[-2:] if len(numeric_cols) >= 2 else numeric_cols,
+                max_selections=2,
+                help="Select exactly two numeric columns containing the uploaded 2D embedding coordinates.",
+            )
+            if len(embedding_cols) != 2:
+                st.error("Select exactly two embedding columns.")
+                st.stop()
+            overlapping_cols = [col for col in embedding_cols if col in feature_cols]
+            if overlapping_cols:
+                feature_cols = [col for col in feature_cols if col not in embedding_cols]
+                st.caption("Embedding columns are excluded from the feature matrix.")
+            if len(feature_cols) < 2:
+                st.error("After excluding embedding columns, select at least two feature columns.")
+                st.stop()
+
         row_cap = min(len(raw_df), 1500)
         default_rows = min(len(raw_df), 400)
         if row_cap > 50:
@@ -379,19 +437,30 @@ with st.sidebar:
         else:
             max_rows = row_cap
 
-        x, meta = prepare_uploaded_dataset(raw_df, feature_cols, label_col, max_rows, seed)
+        x, meta, provided_embedding = prepare_uploaded_dataset(
+            raw_df,
+            feature_cols,
+            label_col,
+            embedding_cols,
+            max_rows,
+            seed,
+        )
         if x.shape[0] < 10:
             st.error("After dropping missing values, at least 10 rows are needed for this demo.")
             st.stop()
         st.caption(f"Using {x.shape[0]} rows and {x.shape[1]} numeric features.")
 
     st.subheader("Embedding")
-    embedding_method = st.segmented_control(
-        "Embedding",
-        ["PCA", "Isomap", "t-SNE"],
-        default="Isomap",
-        help="Method used to compute the 2D embedding shown in the plot.",
-    )
+    if provided_embedding is None:
+        embedding_method = st.segmented_control(
+            "Embedding",
+            ["PCA", "Isomap", "t-SNE"],
+            default="Isomap",
+            help="Method used to compute the 2D embedding shown in the plot.",
+        )
+    else:
+        embedding_method = "Uploaded"
+        st.info("Using the selected embedding columns from the uploaded file.")
     max_neighbors = max(2, min(40, x.shape[0] - 1))
     min_neighbors = min(6, max_neighbors)
     default_neighbors = min(14, max_neighbors)
@@ -469,6 +538,7 @@ with st.spinner("Computing embedding and local distortion metrics..."):
         perplexity,
         outlier_factor,
         seed,
+        provided_embedding,
     )
 
 left, right = st.columns([0.72, 0.28], gap="large")
