@@ -36,6 +36,12 @@ DATASET_HELP = {
     "Two clusters": "Two nearby high-dimensional groups where embeddings can exaggerate gaps.",
 }
 
+COLOR_HELP = {
+    "distortion_ratio": "Color shows anisotropic local stretching: brighter points have more elongated local metric ellipses.",
+    "local_area": "Color shows the overall local metric scale: brighter points have larger local expansion/compression magnitude.",
+    "manifold_position": "Color shows a reference variable from the original data, such as position along the simulated manifold or an uploaded label.",
+}
+
 RELEASE_BASE_URL = "https://github.com/IceLake32/distortion_web_app/releases/latest/download"
 DISTORTIONS_PAPER_URL = "https://academic.oup.com/bib/article/27/2/bbag136/8559622"
 RMETRIC_PAPER_URL = "https://arxiv.org/abs/1305.7255"
@@ -273,10 +279,8 @@ def make_plot(
 
 
 st.title("Visualizing Distortions in Low-Dimensional Embeddings")
-st.caption("No-code companion demo for applying the distortions package to built-in examples or uploaded data.")
 
 with st.sidebar:
-    st.header("Controls")
     with st.expander("Download local version"):
         st.write(
             "For larger private datasets, download a portable version and run the app locally. "
@@ -476,6 +480,7 @@ with left:
         horizontal=True,
         label_visibility="collapsed",
     )
+    st.caption(COLOR_HELP[color_by])
     st.plotly_chart(
         make_plot(metrics, links, color_by, ellipse_stride, ellipse_scale, show_links),
         width="stretch",
