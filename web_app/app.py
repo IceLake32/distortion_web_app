@@ -300,16 +300,39 @@ with st.sidebar:
             """
         )
 
+    st.subheader("Data")
     data_source = st.radio("Data source", ["Built-in examples", "Upload CSV"], horizontal=True)
     seed = st.number_input("Random seed", value=7, min_value=0, max_value=9999)
 
     if data_source == "Built-in examples":
-        dataset = st.selectbox("Dataset", list(DATASET_HELP), help=DATASET_HELP["Swiss roll"])
-        n_samples = st.slider("Samples", 120, 650, 240, step=30)
-        noise = st.slider("Noise", 0.0, 0.5, 0.08, step=0.02)
+        dataset = st.selectbox(
+            "Dataset",
+            list(DATASET_HELP),
+            help="Synthetic example used for the talk demo. Swiss roll and S-curve have known manifold structure; Two clusters shows cluster-level distortion.",
+        )
+        n_samples = st.slider(
+            "Samples",
+            120,
+            650,
+            240,
+            step=30,
+            help="Number of simulated samples. Larger values make the plot denser and the computation slower.",
+        )
+        noise = st.slider(
+            "Noise",
+            0.0,
+            0.5,
+            0.08,
+            step=0.02,
+            help="Amount of noise added to the synthetic data before embedding.",
+        )
         x, meta = make_dataset(dataset, n_samples, noise, seed)
     else:
-        uploaded_file = st.file_uploader("Upload data", type=["csv"])
+        uploaded_file = st.file_uploader(
+            "Upload data",
+            type=["csv"],
+            help="Upload a CSV file. Numeric columns can be selected as features; an optional label column can be used as the reference color.",
+        )
         if uploaded_file is None:
             st.info("Upload a CSV file with numeric feature columns to run the distortion analysis.")
             st.stop()
@@ -320,19 +343,35 @@ with st.sidebar:
             st.error("The uploaded CSV needs at least two numeric feature columns.")
             st.stop()
 
-        feature_cols = st.multiselect("Feature columns", numeric_cols, default=numeric_cols)
+        feature_cols = st.multiselect(
+            "Feature columns",
+            numeric_cols,
+            default=numeric_cols,
+            help="Numeric columns used as the original high-dimensional data matrix.",
+        )
         if len(feature_cols) < 2:
             st.error("Select at least two feature columns.")
             st.stop()
 
         label_options = ["None"] + raw_df.columns.tolist()
-        label_choice = st.selectbox("Label / reference column", label_options)
+        label_choice = st.selectbox(
+            "Label / reference column",
+            label_options,
+            help="Optional column used for labels and reference coloring. It is not used as a feature.",
+        )
         label_col = None if label_choice == "None" else label_choice
 
         row_cap = min(len(raw_df), 1500)
         default_rows = min(len(raw_df), 400)
         if row_cap > 50:
-            max_rows = st.slider("Rows to analyze", 50, row_cap, default_rows, step=50)
+            max_rows = st.slider(
+                "Rows to analyze",
+                50,
+                row_cap,
+                default_rows,
+                step=50,
+                help="Maximum number of rows used for the analysis. Subsampling keeps the web app responsive for large files.",
+            )
         else:
             max_rows = row_cap
 
@@ -342,17 +381,85 @@ with st.sidebar:
             st.stop()
         st.caption(f"Using {x.shape[0]} rows and {x.shape[1]} numeric features.")
 
-    embedding_method = st.segmented_control("Embedding", ["PCA", "Isomap", "t-SNE"], default="Isomap")
+    st.subheader("Embedding")
+    embedding_method = st.segmented_control(
+        "Embedding",
+        ["PCA", "Isomap", "t-SNE"],
+        default="Isomap",
+        help="Method used to compute the 2D embedding shown in the plot.",
+    )
     max_neighbors = max(2, min(40, x.shape[0] - 1))
     min_neighbors = min(6, max_neighbors)
     default_neighbors = min(14, max_neighbors)
-    n_neighbors = st.slider("Neighbors", min_neighbors, max_neighbors, default_neighbors)
-    affinity_radius = st.slider("Affinity radius", 0.2, 5.0, 1.6, step=0.1)
-    perplexity = st.slider("t-SNE perplexity", 5, 80, 30)
-    outlier_factor = st.slider("Broken-link sensitivity", 0.5, 4.0, 1.5, step=0.1)
-    ellipse_stride = st.slider("Ellipse density", 1, 12, 5)
-    ellipse_scale = st.slider("Ellipse scale", 0.01, 0.16, 0.05, step=0.01)
-    show_links = st.toggle("Show broken neighborhood links", value=True)
+
+    if embedding_method == "Isomap":
+        n_neighbors = st.slider(
+            "Isomap neighbors",
+            min_neighbors,
+            max_neighbors,
+            default_neighbors,
+            help="Number of nearest neighbors used by Isomap to build its geodesic graph. This also defines the local neighborhoods used in the distortion analysis.",
+        )
+        perplexity = 30
+    else:
+        n_neighbors = st.slider(
+            "Analysis neighbors",
+            min_neighbors,
+            max_neighbors,
+            default_neighbors,
+            help="Number of original-space nearest neighbors used for local metric estimation and broken-link detection. PCA does not use this for embedding; t-SNE uses perplexity instead.",
+        )
+        if embedding_method == "t-SNE":
+            max_perplexity = max(5, min(80, (x.shape[0] - 1) // 3))
+            perplexity = st.slider(
+                "t-SNE perplexity",
+                5,
+                max_perplexity,
+                min(30, max_perplexity),
+                help="t-SNE neighborhood scale. Higher values make t-SNE consider broader neighborhoods.",
+            )
+        else:
+            perplexity = 30
+
+    st.subheader("Distortion estimation")
+    affinity_radius = st.slider(
+        "Affinity radius",
+        0.2,
+        5.0,
+        1.6,
+        step=0.1,
+        help="Radius for the Gaussian affinity kernel used when constructing the original-space graph Laplacian.",
+    )
+    outlier_factor = st.slider(
+        "Broken-link sensitivity",
+        0.5,
+        4.0,
+        1.5,
+        step=0.1,
+        help="Controls the boxplot-style outlier threshold for flagged neighbor links. Smaller values flag more links.",
+    )
+
+    st.subheader("Visualization")
+    ellipse_stride = st.slider(
+        "Ellipse density",
+        1,
+        12,
+        5,
+        help="Subsampling rate for displayed ellipses. Smaller values draw more ellipses; larger values reduce clutter.",
+    )
+    ellipse_scale = st.slider(
+        "Ellipse scale",
+        0.01,
+        0.16,
+        0.05,
+        step=0.01,
+        help="Visual scale factor for ellipses. This does not change the computed distortion values.",
+    )
+    show_links = st.toggle(
+        "Show broken neighborhood links",
+        value=True,
+        help="Show orange lines for original-space neighbors that are unusually far apart in the embedding.",
+    )
 
 with st.spinner("Computing embedding and local distortion metrics..."):
     metrics, distances, links = run_pipeline(
