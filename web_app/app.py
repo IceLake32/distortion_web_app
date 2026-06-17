@@ -266,10 +266,29 @@ def ellipse_points(row: pd.Series, scale: float, resolution: int = 36) -> tuple[
     return row["embedding_0"] + ellipse[0], row["embedding_1"] + ellipse[1]
 
 
+def hair_points(row: pd.Series, scale: float) -> tuple[list[float], list[float]]:
+    axes = np.sqrt(np.maximum([row["s1"], row["s0"]], 1e-8))
+    directions = np.array([[row["x0"], row["y0"]], [row["x1"], row["y1"]]], dtype=float)
+    axis_ix = int(np.argmax(axes))
+    direction = directions[axis_ix]
+    norm = np.linalg.norm(direction)
+    if norm == 0:
+        direction = np.array([1.0, 0.0])
+    else:
+        direction = direction / norm
+    half_length = axes[axis_ix] / np.nanmedian(axes) * scale
+    delta = direction * half_length
+    return (
+        [row["embedding_0"] - delta[0], row["embedding_0"] + delta[0]],
+        [row["embedding_1"] - delta[1], row["embedding_1"] + delta[1]],
+    )
+
+
 def make_plot(
     df: pd.DataFrame,
     links: pd.DataFrame,
     color_by: str,
+    metric_glyph: str,
     ellipse_stride: int,
     ellipse_scale: float,
     show_links: bool,
@@ -294,18 +313,33 @@ def make_plot(
             )
 
     sampled = df.iloc[::ellipse_stride]
-    for _, row in sampled.iterrows():
-        ex, ey = ellipse_points(row, ellipse_scale)
-        fig.add_trace(
-            go.Scatter(
-                x=ex,
-                y=ey,
-                mode="lines",
-                line={"color": "rgba(41, 49, 51, 0.34)", "width": 1},
-                hoverinfo="skip",
-                showlegend=False,
+    if metric_glyph in {"Ellipses", "Both"}:
+        for _, row in sampled.iterrows():
+            ex, ey = ellipse_points(row, ellipse_scale)
+            fig.add_trace(
+                go.Scatter(
+                    x=ex,
+                    y=ey,
+                    mode="lines",
+                    line={"color": "rgba(41, 49, 51, 0.34)", "width": 1},
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
             )
-        )
+
+    if metric_glyph in {"Hair", "Both"}:
+        for _, row in sampled.iterrows():
+            hx, hy = hair_points(row, ellipse_scale)
+            fig.add_trace(
+                go.Scatter(
+                    x=hx,
+                    y=hy,
+                    mode="lines",
+                    line={"color": "rgba(20, 20, 20, 0.55)", "width": 2},
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
 
     fig.add_trace(
         go.Scatter(
@@ -546,19 +580,25 @@ with st.sidebar:
 
     st.subheader("Visualization")
     ellipse_stride = st.slider(
-        "Ellipse density",
+        "Glyph density",
         1,
         12,
         5,
-        help="Subsampling rate for displayed ellipses. Smaller values draw more ellipses; larger values reduce clutter.",
+        help="Subsampling rate for displayed metric glyphs. Smaller values draw more glyphs; larger values reduce clutter.",
+    )
+    metric_glyph = st.segmented_control(
+        "Metric glyph",
+        ["Ellipses", "Hair", "Both"],
+        default="Ellipses",
+        help="Choose how to display the local metric. Ellipses show both local axes; hair shows the main stretching direction as a short line segment.",
     )
     ellipse_scale = st.slider(
-        "Ellipse scale",
+        "Glyph scale",
         0.01,
         0.16,
         0.05,
         step=0.01,
-        help="Visual scale factor for ellipses. This does not change the computed distortion values.",
+        help="Visual scale factor for ellipses or hair glyphs. This does not change the computed distortion values.",
     )
     show_links = st.toggle(
         "Show broken neighborhood links",
@@ -590,7 +630,7 @@ with left:
     )
     st.caption(COLOR_HELP[color_by])
     st.plotly_chart(
-        make_plot(metrics, links, color_by, ellipse_stride, ellipse_scale, show_links),
+        make_plot(metrics, links, color_by, metric_glyph, ellipse_stride, ellipse_scale, show_links),
         width="stretch",
         config={"displayModeBar": True, "scrollZoom": True},
     )
