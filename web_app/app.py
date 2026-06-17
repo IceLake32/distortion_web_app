@@ -266,32 +266,55 @@ def ellipse_points(row: pd.Series, scale: float, resolution: int = 36) -> tuple[
     return row["embedding_0"] + ellipse[0], row["embedding_1"] + ellipse[1]
 
 
-def hair_points(row: pd.Series, scale: float) -> tuple[list[float], list[float]]:
-    axes = np.sqrt(np.maximum([row["s1"], row["s0"]], 1e-8))
-    directions = np.array([[row["x0"], row["y0"]], [row["x1"], row["y1"]]], dtype=float)
-    axis_ix = int(np.argmax(axes))
-    direction = directions[axis_ix]
-    norm = np.linalg.norm(direction)
-    if norm == 0:
-        direction = np.array([1.0, 0.0])
-    else:
-        direction = direction / norm
-    half_length = axes[axis_ix] / np.nanmedian(axes) * scale
-    delta = direction * half_length
-    return (
-        [row["embedding_0"] - delta[0], row["embedding_0"] + delta[0]],
-        [row["embedding_1"] - delta[1], row["embedding_1"] + delta[1]],
+def metric_matrix(row: pd.Series) -> np.ndarray:
+    basis = np.array([[row["x0"], row["x1"]], [row["y0"], row["y1"]]], dtype=float)
+    values = np.diag(np.maximum([row["s1"], row["s0"]], 1e-8))
+    return basis @ values @ basis.T
+
+
+def local_isometry_preview(
+    df: pd.DataFrame,
+    focus_ix: int,
+    bandwidth: float,
+    strength: float,
+) -> pd.DataFrame:
+    coords = df[["embedding_0", "embedding_1"]].to_numpy(dtype=float)
+    focus = coords[focus_ix]
+    sq_dist = np.sum((coords - focus) ** 2, axis=1)
+    weights = np.exp(-sq_dist / max(2 * bandwidth**2, 1e-8))
+    weights = weights / max(weights.max(), 1e-8)
+
+    matrices = np.stack([metric_matrix(row) for _, row in df.iterrows()])
+    metric_weights = weights / max(weights.sum(), 1e-8)
+    h_star = np.sum(matrices * metric_weights[:, None, None], axis=0)
+    eigvals, eigvecs = np.linalg.eigh(h_star)
+    eigvals = np.maximum(eigvals, 1e-8)
+    local_correction = eigvecs @ np.diag(1 / np.sqrt(eigvals)) @ eigvecs.T
+
+    corrected_raw = focus + (coords - focus) @ local_correction.T
+    corrected = coords + strength * weights[:, None] * (corrected_raw - coords)
+    out = pd.DataFrame(
+        {
+            "embedding_0": coords[:, 0],
+            "embedding_1": coords[:, 1],
+            "corrected_0": corrected[:, 0],
+            "corrected_1": corrected[:, 1],
+            "weight": weights,
+            "label": df["label"].astype(str).to_numpy(),
+        }
     )
+    return out[out["weight"] > 0.12].copy()
 
 
 def make_plot(
     df: pd.DataFrame,
     links: pd.DataFrame,
     color_by: str,
-    metric_glyph: str,
     ellipse_stride: int,
     ellipse_scale: float,
     show_links: bool,
+    isometry_preview: pd.DataFrame | None = None,
+    focus_ix: int | None = None,
 ) -> go.Figure:
     colors = df[color_by]
     fig = go.Figure()
@@ -312,34 +335,60 @@ def make_plot(
                 )
             )
 
-    sampled = df.iloc[::ellipse_stride]
-    if metric_glyph in {"Ellipses", "Both"}:
-        for _, row in sampled.iterrows():
-            ex, ey = ellipse_points(row, ellipse_scale)
-            fig.add_trace(
-                go.Scatter(
-                    x=ex,
-                    y=ey,
-                    mode="lines",
-                    line={"color": "rgba(41, 49, 51, 0.34)", "width": 1},
-                    hoverinfo="skip",
-                    showlegend=False,
-                )
+    for _, row in df.iloc[::ellipse_stride].iterrows():
+        ex, ey = ellipse_points(row, ellipse_scale)
+        fig.add_trace(
+            go.Scatter(
+                x=ex,
+                y=ey,
+                mode="lines",
+                line={"color": "rgba(41, 49, 51, 0.34)", "width": 1},
+                hoverinfo="skip",
+                showlegend=False,
             )
+        )
 
-    if metric_glyph in {"Hair", "Both"}:
-        for _, row in sampled.iterrows():
-            hx, hy = hair_points(row, ellipse_scale)
+    if isometry_preview is not None and len(isometry_preview) > 0:
+        for row in isometry_preview.itertuples(index=False):
             fig.add_trace(
                 go.Scatter(
-                    x=hx,
-                    y=hy,
+                    x=[row.embedding_0, row.corrected_0],
+                    y=[row.embedding_1, row.corrected_1],
                     mode="lines",
-                    line={"color": "rgba(20, 20, 20, 0.55)", "width": 2},
+                    line={"color": "rgba(230, 90, 50, 0.24)", "width": 1.5},
                     hoverinfo="skip",
                     showlegend=False,
                 )
             )
+        fig.add_trace(
+            go.Scatter(
+                x=isometry_preview["corrected_0"],
+                y=isometry_preview["corrected_1"],
+                mode="markers",
+                marker={
+                    "size": 6 + 5 * isometry_preview["weight"],
+                    "color": "rgba(230, 90, 50, 0.78)",
+                    "line": {"width": 0.8, "color": "white"},
+                },
+                text=isometry_preview["label"],
+                hovertemplate="local correction preview<br>label=%{text}<extra></extra>",
+                name="local isometry preview",
+            )
+        )
+
+    if focus_ix is not None:
+        focus = df.iloc[int(focus_ix)]
+        fig.add_trace(
+            go.Scatter(
+                x=[focus["embedding_0"]],
+                y=[focus["embedding_1"]],
+                mode="markers",
+                marker={"symbol": "star", "size": 15, "color": "#e65a32", "line": {"width": 1, "color": "white"}},
+                hovertemplate="isometry anchor<br>sample=%{text}<extra></extra>",
+                text=[str(focus_ix)],
+                name="isometry anchor",
+            )
+        )
 
     fig.add_trace(
         go.Scatter(
@@ -580,25 +629,19 @@ with st.sidebar:
 
     st.subheader("Visualization")
     ellipse_stride = st.slider(
-        "Glyph density",
+        "Ellipse density",
         1,
         12,
         5,
         help="Subsampling rate for displayed metric glyphs. Smaller values draw more glyphs; larger values reduce clutter.",
     )
-    metric_glyph = st.segmented_control(
-        "Metric glyph",
-        ["Ellipses", "Hair", "Both"],
-        default="Ellipses",
-        help="Choose how to display the local metric. Ellipses show both local axes; hair shows the main stretching direction as a short line segment.",
-    )
     ellipse_scale = st.slider(
-        "Glyph scale",
+        "Ellipse scale",
         0.01,
         0.16,
         0.05,
         step=0.01,
-        help="Visual scale factor for ellipses or hair glyphs. This does not change the computed distortion values.",
+        help="Visual scale factor for ellipses. This does not change the computed distortion values.",
     )
     show_links = st.toggle(
         "Show broken neighborhood links",
@@ -619,6 +662,50 @@ with st.spinner("Computing embedding and local distortion metrics..."):
         provided_embedding,
     )
 
+isometry_preview = None
+focus_ix = None
+with st.sidebar:
+    st.subheader("Local isometry preview")
+    show_isometry = st.toggle(
+        "Show local correction preview",
+        value=False,
+        help=(
+            "Approximate the package's inter_isometry idea: choose one anchor sample, "
+            "then show how nearby points would move after a local metric correction."
+        ),
+    )
+    if show_isometry:
+        default_focus = int(metrics["distortion_ratio"].idxmax())
+        focus_ix = st.number_input(
+            "Anchor sample",
+            min_value=0,
+            max_value=len(metrics) - 1,
+            value=default_focus,
+            help="Sample used as the center of the local isometry correction. The default is the most distorted sample.",
+        )
+        correction_bw = st.slider(
+            "Correction bandwidth",
+            0.1,
+            5.0,
+            1.0,
+            step=0.1,
+            help="Controls how far the local correction spreads around the anchor sample in the embedding.",
+        )
+        correction_strength = st.slider(
+            "Correction strength",
+            0.0,
+            1.0,
+            0.7,
+            step=0.05,
+            help="Blends between the original embedding and the locally corrected preview. It does not recompute the embedding.",
+        )
+        isometry_preview = local_isometry_preview(
+            metrics,
+            int(focus_ix),
+            correction_bw,
+            correction_strength,
+        )
+
 left, right = st.columns([0.72, 0.28], gap="large")
 
 with left:
@@ -630,7 +717,7 @@ with left:
     )
     st.caption(COLOR_HELP[color_by])
     st.plotly_chart(
-        make_plot(metrics, links, color_by, metric_glyph, ellipse_stride, ellipse_scale, show_links),
+        make_plot(metrics, links, color_by, ellipse_stride, ellipse_scale, show_links, isometry_preview, focus_ix),
         width="stretch",
         config={"displayModeBar": True, "scrollZoom": True},
     )
