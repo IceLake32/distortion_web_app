@@ -392,36 +392,30 @@ with st.sidebar:
     min_neighbors = min(6, max_neighbors)
     default_neighbors = min(14, max_neighbors)
 
-    if embedding_method == "Isomap":
-        n_neighbors = st.slider(
-            "Isomap neighbors",
-            min_neighbors,
-            max_neighbors,
-            default_neighbors,
-            help="Number of nearest neighbors used by Isomap to build its geodesic graph. This also defines the local neighborhoods used in the distortion analysis.",
+    if embedding_method == "t-SNE":
+        max_perplexity = max(5, min(80, (x.shape[0] - 1) // 3))
+        perplexity = st.slider(
+            "t-SNE perplexity",
+            5,
+            max_perplexity,
+            min(30, max_perplexity),
+            help="t-SNE neighborhood scale. Higher values make t-SNE consider broader neighborhoods.",
         )
-        perplexity = 30
     else:
-        n_neighbors = st.slider(
-            "Analysis neighbors",
-            min_neighbors,
-            max_neighbors,
-            default_neighbors,
-            help="Number of original-space nearest neighbors used for local metric estimation and broken-link detection. PCA does not use this for embedding; t-SNE uses perplexity instead.",
-        )
-        if embedding_method == "t-SNE":
-            max_perplexity = max(5, min(80, (x.shape[0] - 1) // 3))
-            perplexity = st.slider(
-                "t-SNE perplexity",
-                5,
-                max_perplexity,
-                min(30, max_perplexity),
-                help="t-SNE neighborhood scale. Higher values make t-SNE consider broader neighborhoods.",
-            )
-        else:
-            perplexity = 30
+        perplexity = 30
 
     st.subheader("Distortion estimation")
+    n_neighbors = st.slider(
+        "Local neighborhood size",
+        min_neighbors,
+        max_neighbors,
+        default_neighbors,
+        help=(
+            "Number of nearest neighbors in the original data used to estimate local geometry "
+            "and flag broken neighbor links. For Isomap, this same value also controls the "
+            "embedding graph."
+        ),
+    )
     affinity_radius = st.slider(
         "Affinity radius",
         0.2,
