@@ -42,6 +42,51 @@ COLOR_HELP = {
     "manifold_position": "Color shows a reference variable from the original data, such as position along the simulated manifold or an uploaded label.",
 }
 
+
+def render_upload_format_guide() -> None:
+    st.subheader("Upload data format")
+    st.write(
+        "Upload a table where each row is one sample. Numeric columns can be used as the "
+        "original high-dimensional features. You can either let the app compute a 2D "
+        "embedding, or provide two existing embedding coordinate columns."
+    )
+
+    st.markdown("**Supported files:** CSV, TSV/TXT, XLSX, and XLS.")
+
+    compute_tab, embedding_tab = st.tabs(["App computes embedding", "Use uploaded embedding"])
+    with compute_tab:
+        st.write("Use this format when the app should compute PCA, Isomap, or t-SNE.")
+        st.code(
+            """feature_1,feature_2,feature_3,label
+0.1,1.2,0.4,A
+0.3,1.0,0.5,A
+2.4,0.2,1.1,B""",
+            language="csv",
+        )
+        st.markdown(
+            """
+            Select the numeric feature columns as `Feature columns`. The optional `label`
+            column can be selected as `Label / reference column`.
+            """
+        )
+
+    with embedding_tab:
+        st.write("Use this format when you already have UMAP, t-SNE, PCA, or other 2D coordinates.")
+        st.code(
+            """feature_1,feature_2,feature_3,umap_1,umap_2,label
+0.1,1.2,0.4,-2.1,0.5,A
+0.3,1.0,0.5,-1.9,0.7,A
+2.4,0.2,1.1,1.4,-0.3,B""",
+            language="csv",
+        )
+        st.markdown(
+            """
+            Select the original numeric variables as `Feature columns`, then choose the two
+            embedding coordinate columns as `Embedding columns`. The embedding columns are
+            excluded from the feature matrix automatically.
+            """
+        )
+
 RELEASE_BASE_URL = "https://github.com/IceLake32/distortion_web_app/releases/latest/download"
 DISTORTIONS_PAPER_URL = "https://academic.oup.com/bib/article/27/2/bbag136/8559622"
 RMETRIC_PAPER_URL = "https://arxiv.org/abs/1305.7255"
@@ -298,6 +343,7 @@ def make_plot(
 
 
 st.title("Visualizing Distortions in Low-Dimensional Embeddings")
+main_placeholder = st.container()
 
 with st.sidebar:
     with st.expander("Download local version"):
@@ -324,7 +370,7 @@ with st.sidebar:
         )
 
     st.subheader("Data")
-    data_source = st.radio("Data source", ["Built-in examples", "Upload CSV"], horizontal=True)
+    data_source = st.radio("Data source", ["Built-in examples", "Upload data"], horizontal=True)
     seed = st.number_input("Random seed", value=7, min_value=0, max_value=9999)
 
     if data_source == "Built-in examples":
@@ -352,22 +398,14 @@ with st.sidebar:
         x, meta = make_dataset(dataset, n_samples, noise, seed)
         provided_embedding = None
     else:
-        st.markdown(
-            """
-            **Required table format**
-
-            Each row should be one sample. Numeric columns are used as features.
-            You may also include an optional label column and optional
-            precomputed embedding coordinates, such as `umap_1` and `umap_2`.
-            """
-        )
         uploaded_file = st.file_uploader(
             "Upload data",
             type=["csv", "tsv", "txt", "xlsx", "xls"],
             help="Upload a table file. Supported formats: CSV, TSV/TXT, XLSX, and XLS.",
         )
         if uploaded_file is None:
-            st.info("Upload a table with numeric feature columns to run the distortion analysis.")
+            with main_placeholder:
+                render_upload_format_guide()
             st.stop()
 
         try:
