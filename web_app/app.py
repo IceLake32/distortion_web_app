@@ -37,6 +37,10 @@ DATASET_HELP = {
 }
 
 RELEASE_BASE_URL = "https://github.com/IceLake32/distortion_web_app/releases/latest/download"
+DISTORTIONS_PAPER_URL = "https://academic.oup.com/bib/article/27/2/bbag136/8559622"
+RMETRIC_PAPER_URL = "https://arxiv.org/abs/1305.7255"
+DISTORTIONS_PACKAGE_URL = "https://github.com/krisrs1128/distortions"
+DISTORTIONS_DOCS_URL = "https://krisrs1128.github.io/distortions/site/"
 
 
 @st.cache_data(show_spinner=False)
@@ -280,6 +284,21 @@ with st.sidebar:
         )
         st.link_button("Windows zip", f"{RELEASE_BASE_URL}/DistortionsDemo_Windows.zip")
         st.link_button("macOS zip", f"{RELEASE_BASE_URL}/DistortionsDemo_macOS.zip")
+
+    with st.expander("Citations and links"):
+        st.markdown(
+            f"""
+            **distortions package paper**  
+            Sankaran, Zhang, Chenab, and Meila. *Interactive visualization of metric distortion in nonlinear data embeddings using the distortions package.* Briefings in Bioinformatics, 2026. [Paper]({DISTORTIONS_PAPER_URL})
+
+            **RMetric method paper**  
+            Perraul-Joncas and Meila. *Non-linear dimensionality reduction: Riemannian metric estimation and the problem of geometric discovery.* arXiv:1305.7255, 2013. [Paper]({RMETRIC_PAPER_URL})
+
+            **Software**  
+            [distortions GitHub repository]({DISTORTIONS_PACKAGE_URL})  
+            [distortions documentation]({DISTORTIONS_DOCS_URL})
+            """
+        )
 
     data_source = st.radio("Data source", ["Built-in examples", "Upload CSV"], horizontal=True)
     seed = st.number_input("Random seed", value=7, min_value=0, max_value=9999)
