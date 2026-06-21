@@ -3,6 +3,7 @@ numpy>=1.26,<2
 pandas>=2.2,<3
 scipy>=1.11,<2
 scikit-learn>=1.4,<2
+umap-learn>=0.5,<1
 plotly>=5.20,<7
 openpyxl>=3.1,<4
 xlrd>=2.0,<3

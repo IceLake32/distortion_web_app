@@ -5,7 +5,15 @@ $BuildRoot = Join-Path $RepoRoot "build\portable_windows"
 $AppRoot = Join-Path $BuildRoot "DistortionsDemo"
 $DistRoot = Join-Path $RepoRoot "dist"
 $ZipPath = Join-Path $DistRoot "DistortionsDemo_Windows.zip"
-$Python = "python"
+$VenvRoot = Join-Path $AppRoot ".venv"
+$VenvPython = Join-Path $VenvRoot "Scripts\python.exe"
+$Python = if (Test-Path "D:\Anaconda\python.exe") {
+    "D:\Anaconda\python.exe"
+} elseif (Get-Command py -ErrorAction SilentlyContinue) {
+    "py"
+} else {
+    "python"
+}
 
 if (Test-Path $BuildRoot) {
     Remove-Item -LiteralPath $BuildRoot -Recurse -Force
@@ -26,9 +34,19 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot "README.md") -Destination (Join-Path
 
 Push-Location $AppRoot
 try {
-    & $Python -m venv .venv
-    & ".\.venv\Scripts\python.exe" -m pip install --upgrade pip
-    & ".\.venv\Scripts\python.exe" -m pip install -r requirements.txt
+    if ($Python -eq "py") {
+        & py -3 -m venv $VenvRoot
+    } else {
+        & $Python -m venv $VenvRoot
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create the virtual environment using $Python"
+    }
+    if (!(Test-Path $VenvPython)) {
+        throw "Could not find the virtual environment Python at $VenvPython"
+    }
+    & $VenvPython -m pip install --upgrade pip
+    & $VenvPython -m pip install -r requirements.txt
 
     @'
 @echo off
