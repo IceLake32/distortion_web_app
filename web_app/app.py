@@ -684,10 +684,39 @@ def render_downloads_and_citations() -> None:
         st.link_button("Download Windows zip", f"{RELEASE_BASE_URL}/DistortionsDemo_Windows.zip")
     with c2:
         st.link_button("Download macOS zip", f"{RELEASE_BASE_URL}/DistortionsDemo_macOS.zip")
-    st.info(
-        "On macOS, Apple may warn that the command file cannot be verified because this demo is not code-signed. "
-        "To open it, Control-click or right-click `Start Distortions Demo.command`, choose Open, then confirm."
-    )
+    with st.expander("macOS security warning help", expanded=False):
+        st.markdown(
+            """
+            Because this is a portable demo app and is not Apple-notarized yet, macOS may show a
+            security warning the first time you open it.
+
+            Try this first:
+
+            1. Unzip the downloaded file.
+            2. Right-click or Control-click `Start Distortions Demo.command`.
+            3. Choose **Open**.
+            4. If macOS asks again, choose **Open** once more.
+
+            If macOS still blocks it, open Terminal and run:
+
+            ```bash
+            cd ~/Downloads
+            xattr -dr com.apple.quarantine DistortionsDemo
+            ```
+
+            Then open `Start Distortions Demo.command` again.
+
+            What this command does:
+
+            - `cd ~/Downloads` moves Terminal to the Downloads folder, assuming the app was unzipped there.
+            - `xattr` edits extended file attributes on macOS.
+            - `-d com.apple.quarantine` removes the quarantine flag macOS adds to files downloaded from the internet.
+            - `-r` applies this change recursively to the whole `DistortionsDemo` folder.
+
+            This does not disable macOS security globally. It only removes the download quarantine
+            flag for this demo folder.
+            """
+        )
 
     st.subheader("Citations")
     st.markdown(
