@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -47,7 +48,13 @@ DATASET_HELP = {
 COLOR_HELP = {
     "distortion_ratio": "Color shows anisotropic local stretching: brighter points have more elongated local metric ellipses.",
     "local_area": "Color shows the overall local metric scale: brighter points have larger local expansion/compression magnitude.",
-    "manifold_position": "Color shows a reference variable from the original data, such as position along the simulated manifold or an uploaded label.",
+    "reference": "Color shows the selected column. Numeric columns use a continuous scale; categorical columns use distinct colors.",
+}
+
+COLOR_LABELS = {
+    "distortion_ratio": "distortion ratio",
+    "local_area": "local area",
+    "reference": "selected column",
 }
 
 EXAMPLE_DIR = Path(__file__).resolve().parent / "example_data"
@@ -59,15 +66,16 @@ def render_upload_format_guide() -> None:
     st.subheader("Upload data format")
     st.write(
         "Upload a table where each row is one sample. Numeric columns can be used as the "
-        "original high-dimensional features. You can either let the app compute a 2D "
-        "embedding, or provide two existing embedding coordinate columns."
+        "original high-dimensional features. Column names do not need to match the examples; "
+        "the app will suggest sensible defaults and you can adjust them if needed. You can "
+        "either let the app compute an embedding, or provide existing embedding coordinate columns."
     )
 
     st.markdown("**Supported files:** CSV, TSV/TXT, XLSX, and XLS.")
 
     compute_tab, embedding_tab = st.tabs(["App computes embedding", "Use uploaded embedding"])
     with compute_tab:
-        st.write("Use this format when the app should compute PCA, Isomap, or t-SNE.")
+        st.write("Use this format when the app should compute PCA, Isomap, t-SNE, or UMAP.")
         st.code(
             """feature_1,feature_2,feature_3,label
 0.1,1.2,0.4,A
@@ -77,13 +85,14 @@ def render_upload_format_guide() -> None:
         )
         st.markdown(
             """
-            Select the numeric feature columns as `Feature columns`. The optional `label`
-            column can be selected as `Label / reference column`.
+            The feature column names can be anything. Numeric columns are treated as candidate
+            features. Optional label/reference columns can be categorical or numeric; they are
+            used only for labels, tooltips, or reference coloring.
             """
         )
 
     with embedding_tab:
-        st.write("Use this format when you already have UMAP, t-SNE, PCA, or other 2D coordinates.")
+        st.write("Use this format when you already have UMAP, t-SNE, PCA, or other 2D/3D coordinates.")
         st.code(
             """feature_1,feature_2,feature_3,umap_1,umap_2,label
 0.1,1.2,0.4,-2.1,0.5,A
@@ -93,15 +102,15 @@ def render_upload_format_guide() -> None:
         )
         st.markdown(
             """
-            Select the original numeric variables as `Feature columns`, then choose the two
-            embedding coordinate columns as `Embedding columns`. The embedding columns are
-            excluded from the feature matrix automatically.
+            The coordinate column names can be anything, though names like `embedding_0`,
+            `embedding_1`, and `embedding_2` will be detected automatically. These embedding
+            columns are excluded from the original feature matrix.
             """
         )
 
 
 def results_csv(metrics: pd.DataFrame, features: pd.DataFrame | None = None) -> bytes:
-    out = metrics.reset_index(names="sample_index")
+    out = metrics.drop(columns=["reference_is_numeric", "has_reference"], errors="ignore").reset_index(names="sample_index")
     if features is not None:
         feature_table = features.reset_index(drop=True).copy()
         feature_table = feature_table.loc[:, [col for col in feature_table.columns if col not in out.columns]]
@@ -115,6 +124,7 @@ def results_csv(metrics: pd.DataFrame, features: pd.DataFrame | None = None) -> 
         "embedding_1",
         "embedding_2",
         "label",
+        "reference_value",
         "manifold_position",
         "distortion_ratio",
         "local_area",
@@ -169,12 +179,28 @@ def make_dataset(name: str, n_samples: int, noise: float, seed: int) -> tuple[np
     rng = np.random.default_rng(seed)
     if name == "Swiss roll":
         x, color = make_swiss_roll(n_samples=n_samples, noise=noise, random_state=seed)
-        meta = pd.DataFrame({"label": "roll", "manifold_position": color})
+        meta = pd.DataFrame({
+            "label": "roll",
+            "hover_text": [f"sample=roll<br>value={value:.2f}" for value in color],
+            "manifold_position": color,
+            "reference_value": color,
+            "reference_is_numeric": True,
+            "has_reference": True,
+            "reference_name": "manifold_position",
+        })
         return StandardScaler().fit_transform(x), meta
 
     if name == "S-curve":
         x, color = make_s_curve(n_samples=n_samples, noise=noise, random_state=seed)
-        meta = pd.DataFrame({"label": "curve", "manifold_position": color})
+        meta = pd.DataFrame({
+            "label": "curve",
+            "hover_text": [f"sample=curve<br>value={value:.2f}" for value in color],
+            "manifold_position": color,
+            "reference_value": color,
+            "reference_is_numeric": True,
+            "has_reference": True,
+            "reference_name": "manifold_position",
+        })
         return StandardScaler().fit_transform(x), meta
 
     centers = np.array([[-1.2, 0, 0, 0, 0, 0], [1.2, 0.35, 0, 0, 0, 0]])
@@ -186,7 +212,16 @@ def make_dataset(name: str, n_samples: int, noise: float, seed: int) -> tuple[np
         random_state=seed,
     )
     x[:, 2:] += 0.35 * rng.normal(size=x[:, 2:].shape)
-    meta = pd.DataFrame({"label": np.where(labels == 0, "cluster A", "cluster B"), "manifold_position": labels})
+    cluster_labels = np.where(labels == 0, "cluster A", "cluster B")
+    meta = pd.DataFrame({
+        "label": cluster_labels,
+        "hover_text": [f"value={value}" for value in cluster_labels],
+        "manifold_position": labels,
+        "reference_value": cluster_labels,
+        "reference_is_numeric": False,
+        "has_reference": True,
+        "reference_name": "label",
+    })
     return StandardScaler().fit_transform(x), meta
 
 
@@ -197,7 +232,7 @@ def prepare_uploaded_dataset(
     embedding_cols: list[str] | None,
     max_rows: int,
     seed: int,
-) -> tuple[np.ndarray, pd.DataFrame, np.ndarray | None, pd.DataFrame]:
+) -> tuple[np.ndarray, pd.DataFrame, np.ndarray | None, pd.DataFrame, pd.Index]:
     features = df.loc[:, feature_cols].apply(pd.to_numeric, errors="coerce")
     pieces = [features]
     embedding = None
@@ -217,17 +252,85 @@ def prepare_uploaded_dataset(
         y = _standardize_embedding(valid.loc[:, embedding_cols].to_numpy(dtype=float))
 
     if label_col is not None:
-        labels = df.loc[valid.index, label_col].astype(str).fillna("missing").reset_index(drop=True)
-        manifold_position = pd.factorize(labels)[0]
+        raw_reference = df.loc[valid.index, label_col].reset_index(drop=True)
+        numeric_reference = pd.to_numeric(raw_reference, errors="coerce")
+        reference_is_numeric = numeric_reference.notna().all()
+        if reference_is_numeric:
+            reference_value = numeric_reference.astype(float)
+            manifold_position = reference_value
+            if "sample_id" in df.columns:
+                labels = df.loc[valid.index, "sample_id"].astype(str).fillna("sample").reset_index(drop=True)
+            elif "id" in df.columns:
+                labels = df.loc[valid.index, "id"].astype(str).fillna("sample").reset_index(drop=True)
+            else:
+                labels = pd.Series([f"sample {ix}" for ix in range(len(valid))])
+            hover_text = [
+                f"sample={label}<br>value={value:.3g}"
+                for label, value in zip(labels, reference_value)
+            ]
+        else:
+            labels = raw_reference.astype(str).fillna("missing")
+            reference_value = labels
+            manifold_position = pd.factorize(labels)[0]
+            hover_text = [f"value={label}" for label in labels]
     else:
         labels = pd.Series(["uploaded"] * len(valid))
         manifold_position = np.arange(len(valid))
+        reference_value = labels
+        reference_is_numeric = False
+        hover_text = [f"sample={label}" for label in labels]
+    has_reference = label_col is not None
 
     meta = pd.DataFrame({
         "label": labels,
+        "hover_text": hover_text,
         "manifold_position": manifold_position,
+        "reference_value": reference_value,
+        "reference_is_numeric": reference_is_numeric,
+        "has_reference": has_reference,
+        "reference_name": label_col if label_col is not None else "None",
     })
-    return x, meta, y, feature_export
+    return x, meta, y, feature_export, valid.index
+
+
+def apply_reference_column(meta: pd.DataFrame, raw_df: pd.DataFrame, valid_index: pd.Index, reference_col: str | None) -> pd.DataFrame:
+    out = meta.copy()
+    if reference_col is None:
+        out["has_reference"] = False
+        out["reference_name"] = "None"
+        return out
+
+    raw_reference = raw_df.loc[valid_index, reference_col].reset_index(drop=True)
+    numeric_reference = pd.to_numeric(raw_reference, errors="coerce")
+    reference_is_numeric = numeric_reference.notna().all()
+
+    if reference_is_numeric:
+        reference_value = numeric_reference.astype(float)
+        if "sample_id" in raw_df.columns:
+            sample_labels = raw_df.loc[valid_index, "sample_id"].astype(str).fillna("sample").reset_index(drop=True)
+        elif "id" in raw_df.columns:
+            sample_labels = raw_df.loc[valid_index, "id"].astype(str).fillna("sample").reset_index(drop=True)
+        else:
+            sample_labels = pd.Series([f"sample {ix}" for ix in range(len(valid_index))])
+        hover_text = [
+            f"sample={label}<br>{reference_col}={value:.3g}"
+            for label, value in zip(sample_labels, reference_value)
+        ]
+        out["label"] = sample_labels
+        out["manifold_position"] = reference_value
+        out["reference_value"] = reference_value
+    else:
+        reference_value = raw_reference.astype(str).fillna("missing")
+        hover_text = [f"{reference_col}={value}" for value in reference_value]
+        out["label"] = reference_value
+        out["manifold_position"] = pd.factorize(reference_value)[0]
+        out["reference_value"] = reference_value
+
+    out["hover_text"] = hover_text
+    out["reference_is_numeric"] = reference_is_numeric
+    out["has_reference"] = True
+    out["reference_name"] = reference_col
+    return out
 
 
 def embed_data(x: np.ndarray, method: str, n_neighbors: int, perplexity: int, seed: int, n_components: int) -> np.ndarray:
@@ -408,41 +511,34 @@ def make_plot(
     ellipse_scale: float,
     show_links: bool,
     show_ellipsoids: bool = False,
+    max_ellipsoids: int = 45,
 ) -> go.Figure:
-    colors = df[color_by]
+    is_reference_color = color_by == "reference"
+    reference_is_numeric = bool(df["reference_is_numeric"].iloc[0]) if "reference_is_numeric" in df else True
+    if is_reference_color:
+        colors = df["reference_value"] if reference_is_numeric else pd.factorize(df["reference_value"].astype(str))[0]
+    else:
+        colors = df[color_by]
     fig = go.Figure()
     is_3d = "embedding_2" in df.columns
 
-    if show_links:
+    if show_links and not is_3d:
         broken = links[links["broken"]].head(180)
         for edge in broken.itertuples(index=False):
             a = df.iloc[int(edge.center)]
             b = df.iloc[int(edge.neighbor)]
-            if is_3d:
-                fig.add_trace(
-                    go.Scatter3d(
-                        x=[a.embedding_0, b.embedding_0],
-                        y=[a.embedding_1, b.embedding_1],
-                        z=[a.embedding_2, b.embedding_2],
-                        mode="lines",
-                        line={"color": "rgba(228, 87, 46, 0.20)", "width": 2},
-                        hoverinfo="skip",
-                        showlegend=False,
-                    )
+            fig.add_trace(
+                go.Scatter(
+                    x=[a.embedding_0, b.embedding_0],
+                    y=[a.embedding_1, b.embedding_1],
+                    mode="lines",
+                    line={"color": "rgba(228, 87, 46, 0.18)", "width": 1},
+                    hoverinfo="skip",
+                    showlegend=False,
                 )
-            else:
-                fig.add_trace(
-                    go.Scatter(
-                        x=[a.embedding_0, b.embedding_0],
-                        y=[a.embedding_1, b.embedding_1],
-                        mode="lines",
-                        line={"color": "rgba(228, 87, 46, 0.18)", "width": 1},
-                        hoverinfo="skip",
-                        showlegend=False,
-                    )
-                )
+            )
 
-    if not is_3d:
+    if not is_3d and show_ellipsoids:
         for _, row in df.iloc[::ellipse_stride].iterrows():
             ex, ey = ellipse_points(row, ellipse_scale)
             fig.add_trace(
@@ -456,8 +552,10 @@ def make_plot(
                 )
             )
 
-    if is_3d and show_ellipsoids:
-        for _, row in df.iloc[::ellipse_stride].head(45).iterrows():
+    if is_3d and show_ellipsoids and max_ellipsoids > 0:
+        ellipsoid_count = min(max_ellipsoids, len(df))
+        ellipsoid_indices = np.unique(np.linspace(0, len(df) - 1, ellipsoid_count, dtype=int))
+        for _, row in df.iloc[ellipsoid_indices].iterrows():
             ex, ey, ez = ellipsoid_points(row, ellipse_scale)
             fig.add_trace(
                 go.Surface(
@@ -470,6 +568,7 @@ def make_plot(
                     showscale=False,
                     hoverinfo="skip",
                     name="metric ellipsoid",
+                    showlegend=False,
                 )
             )
             for ax, ay, az in ellipsoid_axes(row, ellipse_scale):
@@ -485,13 +584,34 @@ def make_plot(
                     )
                 )
 
+    if show_links and is_3d:
+        broken = links[links["broken"]].head(180)
+        for edge in broken.itertuples(index=False):
+            a = df.iloc[int(edge.center)]
+            b = df.iloc[int(edge.neighbor)]
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[a.embedding_0, b.embedding_0],
+                    y=[a.embedding_1, b.embedding_1],
+                    z=[a.embedding_2, b.embedding_2],
+                    mode="lines",
+                    line={"color": "rgba(228, 87, 46, 0.78)", "width": 5},
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
     marker = {
         "size": 7,
         "color": colors,
-        "colorscale": "Viridis",
-        "showscale": color_by != "label",
         "line": {"width": 0.5, "color": "rgba(255,255,255,0.7)"},
     }
+    if is_reference_color and not reference_is_numeric:
+        marker["colorscale"] = "Plotly3"
+        marker["showscale"] = False
+    else:
+        marker["colorscale"] = "Viridis"
+        marker["showscale"] = True
     if is_3d:
         fig.add_trace(
             go.Scatter3d(
@@ -500,28 +620,28 @@ def make_plot(
                 z=df["embedding_2"],
                 mode="markers",
                 marker=marker,
-                text=df["label"],
+                text=df["hover_text"] if "hover_text" in df else df["label"],
                 customdata=np.stack([df["distortion_ratio"], df["local_area"]], axis=1),
                 hovertemplate=(
-                    "x=%{x:.2f}<br>y=%{y:.2f}<br>z=%{z:.2f}<br>"
-                    "label=%{text}<br>"
+                    "%{text}<br>"
                     "axis ratio=%{customdata[0]:.2f}<br>"
                     "local scale=%{customdata[1]:.2f}<extra></extra>"
                 ),
                 name="samples",
+                showlegend=False,
             )
         )
         fig.update_layout(
             height=690,
             margin={"l": 10, "r": 10, "t": 10, "b": 10},
             paper_bgcolor="white",
+            showlegend=False,
             scene={
-                "xaxis": {"title": ""},
-                "yaxis": {"title": ""},
-                "zaxis": {"title": ""},
+                "xaxis": {"title": "", "showticklabels": False},
+                "yaxis": {"title": "", "showticklabels": False},
+                "zaxis": {"title": "", "showticklabels": False},
                 "aspectmode": "data",
             },
-            legend={"orientation": "h", "y": 1.02},
         )
     else:
         fig.add_trace(
@@ -530,15 +650,15 @@ def make_plot(
                 y=df["embedding_1"],
                 mode="markers",
                 marker=marker,
-                text=df["label"],
+                text=df["hover_text"] if "hover_text" in df else df["label"],
                 customdata=np.stack([df["distortion_ratio"], df["local_area"]], axis=1),
                 hovertemplate=(
-                    "x=%{x:.2f}<br>y=%{y:.2f}<br>"
-                    "label=%{text}<br>"
+                    "%{text}<br>"
                     "axis ratio=%{customdata[0]:.2f}<br>"
                     "local area=%{customdata[1]:.2f}<extra></extra>"
                 ),
                 name="samples",
+                showlegend=False,
             )
         )
         fig.update_layout(
@@ -546,9 +666,9 @@ def make_plot(
             margin={"l": 10, "r": 10, "t": 10, "b": 10},
             paper_bgcolor="white",
             plot_bgcolor="#fbfaf7",
-            xaxis={"title": "", "showgrid": False, "zeroline": False},
-            yaxis={"title": "", "showgrid": False, "zeroline": False, "scaleanchor": "x", "scaleratio": 1},
-            legend={"orientation": "h", "y": 1.02},
+            showlegend=False,
+            xaxis={"title": "", "showgrid": False, "zeroline": False, "showticklabels": False},
+            yaxis={"title": "", "showgrid": False, "zeroline": False, "showticklabels": False, "scaleanchor": "x", "scaleratio": 1},
         )
     return fig
 
@@ -564,6 +684,10 @@ def render_downloads_and_citations() -> None:
         st.link_button("Download Windows zip", f"{RELEASE_BASE_URL}/DistortionsDemo_Windows.zip")
     with c2:
         st.link_button("Download macOS zip", f"{RELEASE_BASE_URL}/DistortionsDemo_macOS.zip")
+    st.info(
+        "On macOS, Apple may warn that the command file cannot be verified because this demo is not code-signed. "
+        "To open it, Control-click or right-click `Start Distortions Demo.command`, choose Open, then confirm."
+    )
 
     st.subheader("Citations")
     st.markdown(
@@ -577,6 +701,128 @@ def render_downloads_and_citations() -> None:
         **Software**  
         [distortions GitHub repository]({DISTORTIONS_PACKAGE_URL})  
         [distortions documentation]({DISTORTIONS_DOCS_URL})
+        """
+    )
+
+
+def render_raw_upload_guide(n_components: int) -> None:
+    st.subheader("Upload raw data")
+    st.write(
+        "Use this workflow when you have original measurements but do not already have an embedding. "
+        f"The app will compute a {n_components}D embedding, then evaluate local distortion."
+    )
+
+    st.markdown("**Example: raw Swiss roll data**")
+    st.dataframe(example_preview(str(RAW_DATA_EXAMPLE_PATH)), width="stretch")
+    st.download_button(
+        "Download synthetic raw data example",
+        data=example_csv_bytes(str(RAW_DATA_EXAMPLE_PATH)),
+        file_name="raw_swiss_roll_example.csv",
+        mime="text/csv",
+        help="Download a 240-row synthetic Swiss roll table showing the expected raw data format.",
+    )
+
+    st.markdown(
+        """
+        **1. Prepare your table**
+
+        Each row should be one sample. In the Swiss roll example above, `sample_000`,
+        `sample_001`, ... are individual samples.
+
+        The columns you want to embed should be numeric measurement columns. In this example,
+        `feature_1`, `feature_2`, and `feature_3` are the original Swiss roll coordinates. These
+        are the columns the app uses to compute PCA, Isomap, t-SNE, or UMAP, and they are also used
+        to estimate distortion in the original data space.
+
+        Feature names are flexible. They do not have to be called `feature_1`, `feature_2`, etc.
+        For larger datasets, a helpful naming pattern is `prefix_1`, `prefix_2`, ... or
+        `prefix_01`, `prefix_02`, ... . The prefix can be anything, such as `gene`, `protein`,
+        `image`, `pixel`, or `feature`. The app detects columns with the same prefix as a feature
+        group, so users can choose one group instead of manually selecting many columns.
+
+        **2. Add optional columns for interpretation**
+
+        Extra columns can help explain the plot, but they are not used to compute the embedding.
+        In the example, `sample_id` is an ID column. `label` is a categorical reference column, so it
+        can be used for hover text or discrete color groups. `manifold_position` is a numeric
+        reference column, so it can be used for hover text or continuous coloring.
+
+        These optional column names are also flexible. Your file can use names such as `cell_type`,
+        `batch`, `time`, `patient_group`, or any other metadata that helps interpret the embedding.
+
+        **3. Upload and run the analysis**
+
+        After uploading, the app suggests feature columns automatically. If it detects a feature
+        group like `gene_1`, `gene_2`, ... or `feature_1`, `feature_2`, ... , you can use the whole
+        group, choose an index range, or exclude specific columns. If your columns do not follow a
+        shared prefix pattern, switch to custom selection and choose the numeric columns manually.
+
+        When the setup looks right, click **Run analysis**. After the first run, you can switch
+        between PCA, Isomap, t-SNE, and UMAP and adjust visualization options without uploading the
+        data again.
+        """
+    )
+
+
+def render_embedding_upload_guide(n_components: int) -> None:
+    st.subheader("Evaluate my embedding")
+    st.write(
+        f"Use this workflow when you already computed a {n_components}D embedding elsewhere. "
+        "The app will keep your uploaded coordinates fixed and evaluate their local distortion."
+    )
+
+    st.markdown("**Example: Swiss roll data with an existing embedding**")
+    st.dataframe(example_preview(str(EMBEDDING_DATA_EXAMPLE_PATH)), width="stretch")
+    st.download_button(
+        "Download synthetic embedding example",
+        data=example_csv_bytes(str(EMBEDDING_DATA_EXAMPLE_PATH)),
+        file_name="existing_embedding_swiss_roll_example.csv",
+        mime="text/csv",
+        help="Download a 240-row synthetic Swiss roll table with raw features plus existing Isomap coordinates.",
+    )
+
+    st.markdown(
+        f"""
+        **1. Include the original feature columns**
+
+        The app still needs the original measurements, even when you upload your own embedding.
+        These columns define the original data space used for local geometry and distortion
+        estimation. In the example above, `feature_1`, `feature_2`, and `feature_3` are the raw
+        Swiss roll coordinates.
+
+        Feature names are flexible. They do not have to be called `feature_1`, `feature_2`, etc.
+        For many columns, use a shared prefix such as `gene_1`, `gene_2`, ... or `protein_01`,
+        `protein_02`, ... so the app can detect a feature group. If your columns do not follow a
+        shared prefix pattern, use custom selection.
+
+        **2. Include your embedding coordinate columns**
+
+        Add `{n_components}` numeric coordinate columns for the embedding you want to evaluate.
+        Names like `embedding_0`, `embedding_1`{", and `embedding_2`" if n_components == 3 else ""}
+        are detected automatically, but the names can be different. If needed, select the coordinate
+        columns manually in the sidebar.
+
+        The app also recognizes common method-specific names such as `isomap_1`, `isomap_2`,
+        `umap_1`, `umap_2`, `tsne_1`, `tsne_2`, or `pca_1`, `pca_2`. When these columns are detected
+        as embedding coordinates, they are automatically excluded from the original feature columns.
+        For example, in the table above, `feature_1`, `feature_2`, and `feature_3` define the
+        original geometry, while `isomap_1` and `isomap_2` define the fixed 2D layout being
+        evaluated.
+
+        These embedding coordinate columns are the layout being evaluated. They are not used as
+        original features, and the app will not recompute them. Original features and embedding
+        coordinates are matched row by row. If you combine them from separate files, make sure the
+        sample order is the same before uploading.
+
+        **3. Upload and run the evaluation**
+
+        After uploading, check that the app selected the correct original feature columns and the
+        correct embedding coordinate columns. Optional columns such as `label`, `cell_type`, `time`,
+        or `batch` can be used for hover text and coloring, but they are not used for distortion
+        estimation.
+
+        When the setup looks right, click **Run analysis**. The app will keep your uploaded
+        coordinates fixed and estimate distortion for that embedding.
         """
     )
 
@@ -626,6 +872,32 @@ def find_embedding_defaults(numeric_cols: list[str], n_components: int = 2) -> l
     return []
 
 
+def detect_feature_groups(numeric_cols: list[str], excluded_cols: set[str]) -> dict[str, list[str]]:
+    groups: dict[str, list[tuple[int, str]]] = {}
+    embedding_prefixes = {"embedding", "umap", "isomap", "tsne", "t_sne", "pca"}
+    for col in numeric_cols:
+        if col in excluded_cols or looks_like_metadata(col):
+            continue
+        match = re.match(r"^(.+)_([0-9]+)$", col)
+        if match is None:
+            continue
+        prefix = match.group(1)
+        if prefix.lower() in embedding_prefixes:
+            continue
+        groups.setdefault(prefix, []).append((int(match.group(2)), col))
+
+    return {
+        prefix: [col for _, col in sorted(items)]
+        for prefix, items in sorted(groups.items())
+        if len(items) >= 2
+    }
+
+
+def feature_suffix_number(col: str) -> int | None:
+    match = re.match(r"^.+_([0-9]+)$", col)
+    return int(match.group(1)) if match is not None else None
+
+
 def default_label_column(raw_df: pd.DataFrame) -> str:
     for candidate in ["manifold_position", "label", "class", "group", "sample_id"]:
         if candidate in raw_df.columns:
@@ -664,41 +936,115 @@ def select_uploaded_columns(raw_df: pd.DataFrame, require_embedding: bool, n_com
         col for col in numeric_cols
         if col not in (embedding_cols or []) and col not in likely_embedding_cols and not looks_like_metadata(col)
     ]
-    feature_cols = st.multiselect(
-        "Original feature columns",
-        numeric_cols,
-        default=default_features,
-        help="Numeric columns used as the original high-dimensional data matrix.",
-    )
-    st.caption("These columns define the original data space used for embedding and distortion estimation.")
+    feature_groups = detect_feature_groups(numeric_cols, set(embedding_cols or []) | likely_embedding_cols)
+    group_options = list(feature_groups) + ["Auto-detected numeric columns", "Custom selection"]
+    default_group = max(feature_groups, key=lambda key: len(feature_groups[key])) if feature_groups else "Auto-detected numeric columns"
+    feature_group = default_group
+    if feature_group in feature_groups:
+        feature_cols = feature_groups[feature_group]
+    elif feature_group == "Auto-detected numeric columns":
+        feature_cols = default_features
+    else:
+        feature_cols = default_features
+    default_label = default_label_column(raw_df)
+    label_choice = default_label if default_label in raw_df.columns else "None"
+    row_cap = min(len(raw_df), 1500)
+    default_rows = min(len(raw_df), 400)
+    max_rows = default_rows
+
+    with st.expander("Uploaded data options", expanded=True):
+        if feature_groups:
+            st.caption(
+                "Detected feature groups: "
+                + ", ".join(f"`{prefix}` ({len(cols)} columns)" for prefix, cols in feature_groups.items())
+            )
+        else:
+            st.caption("No `prefix_01`, `prefix_02`, ... feature groups were detected.")
+        feature_group = st.selectbox(
+            "Feature group",
+            group_options,
+            index=group_options.index(default_group),
+            help=(
+                "Choose which numeric column group should be embedded. Columns named like "
+                "`gene_01`, `gene_02`, ... are grouped as `gene`."
+            ),
+        )
+        if feature_group in feature_groups:
+            feature_cols = feature_groups[feature_group]
+        elif feature_group == "Auto-detected numeric columns":
+            feature_cols = default_features
+        else:
+            feature_cols = default_features
+
+        st.caption(
+            "Feature columns define the original data space used for embedding and distortion estimation. "
+            "For grouped columns, use all features by default, choose an index range, or exclude a few columns."
+        )
+        if feature_group in feature_groups:
+            numbered = [(feature_suffix_number(col), col) for col in feature_cols]
+            numbered = [(num, col) for num, col in numbered if num is not None]
+            if numbered:
+                numbers = [num for num, _ in numbered]
+                min_ix, max_ix = min(numbers), max(numbers)
+                c1, c2 = st.columns(2)
+                with c1:
+                    start_ix = st.number_input("Start index", min_value=min_ix, max_value=max_ix, value=min_ix)
+                with c2:
+                    end_ix = st.number_input("End index", min_value=min_ix, max_value=max_ix, value=max_ix)
+                if start_ix > end_ix:
+                    st.error("Start index must be less than or equal to end index.")
+                    st.stop()
+                feature_cols = [col for num, col in numbered if start_ix <= num <= end_ix]
+            st.caption(
+                f"Using {len(feature_cols)} `{feature_group}_*` columns"
+                + (f", from `{feature_cols[0]}` to `{feature_cols[-1]}`." if feature_cols else ".")
+            )
+            excluded_cols = st.multiselect(
+                "Exclude columns",
+                feature_cols,
+                default=[],
+                help="Optional. Remove a small number of columns from the selected feature group.",
+            )
+            feature_cols = [col for col in feature_cols if col not in excluded_cols]
+            st.caption(f"Final feature count: {len(feature_cols)}.")
+        elif feature_group == "Auto-detected numeric columns":
+            st.caption(f"Using all {len(feature_cols)} auto-detected numeric feature columns.")
+            excluded_cols = st.multiselect(
+                "Exclude columns",
+                feature_cols,
+                default=[],
+                help="Optional. Remove a small number of auto-detected columns.",
+            )
+            feature_cols = [col for col in feature_cols if col not in excluded_cols]
+            st.caption(f"Final feature count: {len(feature_cols)}.")
+        else:
+            feature_cols = st.multiselect(
+                "Feature columns to embed",
+                numeric_cols,
+                default=feature_cols,
+                help="Numeric columns used as the original high-dimensional data matrix.",
+            )
+            st.caption("Choose the exact numeric columns to use as the original data space.")
+
+        if row_cap > 50:
+            max_rows = st.slider(
+                "Rows to analyze",
+                50,
+                row_cap,
+                default_rows,
+                step=50,
+                help="Maximum number of rows used for the analysis. Subsampling keeps the web app responsive for large files.",
+            )
+        else:
+            st.caption(f"Using all {row_cap} rows.")
+            max_rows = row_cap
+
     feature_cols = [col for col in feature_cols if col not in (embedding_cols or [])]
     if len(feature_cols) < 2:
         st.error("Select at least two feature columns. Embedding coordinate columns should not be used as features.")
         st.stop()
-
-    label_options = ["None"] + raw_df.columns.tolist()
-    label_choice = st.selectbox(
-        "Label / reference column",
-        label_options,
-        index=label_options.index(default_label_column(raw_df)) if default_label_column(raw_df) in label_options else 0,
-        help="Optional column used for labels and reference coloring. It is not used as a feature.",
-    )
-    st.caption("This column is only used for labels, tooltips, and reference coloring; it is not used in geometry calculations.")
     label_col = None if label_choice == "None" else label_choice
-
-    row_cap = min(len(raw_df), 1500)
-    default_rows = min(len(raw_df), 400)
-    if row_cap > 50:
-        max_rows = st.slider(
-            "Rows to analyze",
-            50,
-            row_cap,
-            default_rows,
-            step=50,
-            help="Maximum number of rows used for the analysis. Subsampling keeps the web app responsive for large files.",
-        )
-    else:
-        max_rows = row_cap
+    st.caption(f"Features: {len(feature_cols)} numeric columns.")
 
     return feature_cols, label_col, embedding_cols, max_rows
 
@@ -711,19 +1057,20 @@ def render_results(
     ellipse_scale: float,
     show_links: bool,
     show_ellipsoids: bool = False,
+    max_ellipsoids: int = 45,
     feature_export: pd.DataFrame | None = None,
 ) -> None:
     left, right = st.columns([0.72, 0.28], gap="large")
+    is_3d = "embedding_2" in metrics.columns
 
     with left:
         st.plotly_chart(
-            make_plot(metrics, links, color_by, ellipse_stride, ellipse_scale, show_links, show_ellipsoids),
+            make_plot(metrics, links, color_by, ellipse_stride, ellipse_scale, show_links, show_ellipsoids, max_ellipsoids),
             width="stretch",
             config={"displayModeBar": True, "scrollZoom": True},
         )
 
     with right:
-        is_3d = "embedding_2" in metrics.columns
         broken_count = int(links["broken"].sum())
         st.metric("Flagged neighbor links", f"{broken_count:,}", f"{broken_count / max(len(links), 1):.1%}")
         st.caption("Original-space nearest-neighbor pairs whose embedded distance is unusually large.")
@@ -732,12 +1079,13 @@ def render_results(
         st.metric("95th pct axis ratio", f"{metrics['distortion_ratio'].quantile(0.95):.2f}")
         st.caption("Upper-tail local anisotropy. This highlights severe distortion among the most stretched samples.")
 
-        st.subheader("How to read the visualization")
+    with st.expander("How to read the visualization", expanded=True):
         if is_3d:
             st.write(
                 "Each point is one high-dimensional sample after embedding into 3D. Color summarizes local "
                 "metric distortion estimated from the original space. Orange links mark original-space "
-                "neighbors that are unusually far apart in the 3D embedding."
+                "neighbors that are unusually far apart in the 3D embedding. Optional ellipsoids summarize "
+                "the local 3D Riemannian metric; elongated ellipsoids indicate directions that are stretched unevenly."
             )
         else:
             st.write(
@@ -747,27 +1095,27 @@ def render_results(
                 "unusually far apart in the embedding."
             )
 
-        st.download_button(
-            "Download embedding and metrics CSV",
-            data=results_csv(metrics, feature_export),
-            file_name="distortion_embedding_metrics.csv",
-            mime="text/csv",
-            help="Download feature columns, plotted 2D embedding coordinates, and distortion metrics.",
-            width="stretch",
-        )
-        if is_3d:
-            st.caption("This CSV can be re-uploaded in the Evaluate my embedding tab using `embedding_0`, `embedding_1`, and `embedding_2` as embedding columns.")
-        else:
-            st.caption("This CSV can be re-uploaded in the Evaluate my embedding tab using `embedding_0` and `embedding_1` as embedding columns.")
+    st.download_button(
+        "Download embedding and metrics CSV",
+        data=results_csv(metrics, feature_export),
+        file_name="distortion_embedding_metrics.csv",
+        mime="text/csv",
+        help="Download feature columns, plotted embedding coordinates, and distortion metrics.",
+        width="stretch",
+    )
+    if is_3d:
+        st.caption("This CSV can be re-uploaded in the Evaluate my embedding tab using `embedding_0`, `embedding_1`, and `embedding_2` as embedding columns.")
+    else:
+        st.caption("This CSV can be re-uploaded in the Evaluate my embedding tab using `embedding_0` and `embedding_1` as embedding columns.")
 
-        st.subheader("Most distorted samples")
-        embedding_cols = [col for col in ["embedding_0", "embedding_1", "embedding_2"] if col in metrics.columns]
-        st.dataframe(
-            metrics[embedding_cols + ["label", "distortion_ratio", "local_area"]]
-            .sort_values("distortion_ratio", ascending=False)
-            .head(12),
-            width="stretch",
-        )
+    st.subheader("Most distorted samples")
+    embedding_cols = [col for col in ["embedding_0", "embedding_1", "embedding_2"] if col in metrics.columns]
+    st.dataframe(
+        metrics[embedding_cols + ["label", "distortion_ratio", "local_area"]]
+        .sort_values("distortion_ratio", ascending=False)
+        .head(12),
+        width="stretch",
+    )
 
 
 st.title("Visualizing Distortions in Low-Dimensional Embeddings")
@@ -786,7 +1134,7 @@ if stage == "Downloads & citations":
 
 with st.sidebar:
     st.subheader(stage)
-    seed = st.number_input("Random seed", value=7, min_value=0, max_value=9999)
+    seed = 7
     embedding_dimension = st.segmented_control(
         "Embedding dimension",
         ["2D", "3D"],
@@ -800,28 +1148,18 @@ with st.sidebar:
 
     provided_embedding = None
     feature_export = None
+    raw_df = None
+    valid_index = None
+    default_reference_col = None
+    run_analysis = stage == "Demo"
     if stage == "Demo":
         dataset = st.selectbox(
             "Dataset",
             list(DATASET_HELP),
             help="Synthetic example used for the talk demo. Swiss roll and S-curve have known manifold structure; Two clusters shows cluster-level distortion.",
         )
-        n_samples = st.slider(
-            "Samples",
-            120,
-            650,
-            240,
-            step=30,
-            help="Number of simulated samples. Larger values make the plot denser and the computation slower.",
-        )
-        noise = st.slider(
-            "Noise",
-            0.0,
-            0.5,
-            0.08,
-            step=0.02,
-            help="Amount of noise added to the synthetic data before embedding.",
-        )
+        n_samples = 240
+        noise = 0.08
         x, meta = make_dataset(dataset, n_samples, noise, seed)
         feature_export = pd.DataFrame(
             x,
@@ -836,19 +1174,20 @@ with st.sidebar:
         if uploaded_file is None:
             x = None
             meta = None
+            st.session_state.pop("uploaded_run_key", None)
         else:
             raw_df = read_upload_or_stop(uploaded_file)
             with st.expander("Preview uploaded table", expanded=False):
                 st.dataframe(raw_df.head(8), width="stretch")
-            feature_cols, label_col, embedding_cols, max_rows = select_uploaded_columns(
+            feature_cols, default_reference_col, embedding_cols, max_rows = select_uploaded_columns(
                 raw_df,
                 require_embedding=(stage == "Evaluate my embedding"),
                 n_components=n_components,
             )
-            x, meta, provided_embedding, feature_export = prepare_uploaded_dataset(
+            x, meta, provided_embedding, feature_export, valid_index = prepare_uploaded_dataset(
                 raw_df,
                 feature_cols,
-                label_col,
+                None,
                 embedding_cols,
                 max_rows,
                 seed,
@@ -857,6 +1196,22 @@ with st.sidebar:
                 st.error("After dropping missing values, at least 10 rows are needed for this demo.")
                 st.stop()
             st.caption(f"Using {x.shape[0]} rows and {x.shape[1]} numeric features.")
+            upload_run_key = (
+                stage,
+                n_components,
+                uploaded_file.name,
+                uploaded_file.size,
+                tuple(feature_cols),
+                tuple(embedding_cols or []),
+                max_rows,
+            )
+            if st.button("Run analysis", type="primary", width="stretch"):
+                st.session_state["uploaded_run_key"] = upload_run_key
+            run_analysis = st.session_state.get("uploaded_run_key") == upload_run_key
+            if not run_analysis:
+                st.info("Review the uploaded data options, then click Run analysis.")
+                x = None
+                meta = None
 
     if x is not None:
         st.subheader("Embedding")
@@ -876,152 +1231,146 @@ with st.sidebar:
         max_neighbors = max(2, min(40, x.shape[0] - 1))
         min_neighbors = min(6, max_neighbors)
         default_neighbors = min(14, max_neighbors)
-
-        if embedding_method == "t-SNE":
-            max_perplexity = max(5, min(80, (x.shape[0] - 1) // 3))
-            perplexity = st.slider(
-                "t-SNE perplexity",
-                5,
-                max_perplexity,
-                min(30, max_perplexity),
-                help="t-SNE neighborhood scale. Higher values make t-SNE consider broader neighborhoods.",
-            )
-        else:
-            perplexity = 30
-
-        st.subheader("Distortion estimation")
-        n_neighbors = st.slider(
-            "Local neighborhood size",
-            min_neighbors,
-            max_neighbors,
-            default_neighbors,
-            help=(
-                "Number of nearest neighbors in the original data used to estimate local geometry "
-                "and flag broken neighbor links. For Isomap and UMAP, this same value also controls "
-                "the embedding neighborhood size."
-            ),
-        )
-        affinity_radius = st.slider(
-            "Affinity radius",
-            0.2,
-            5.0,
-            1.6,
-            step=0.1,
-            help="Radius for the Gaussian affinity kernel used when constructing the original-space graph Laplacian.",
-        )
-        outlier_factor = st.slider(
-            "Broken-link sensitivity",
-            0.5,
-            4.0,
-            1.5,
-            step=0.1,
-            help="Controls the boxplot-style outlier threshold for flagged neighbor links. Smaller values flag more links.",
-        )
+        perplexity = 30
+        n_neighbors = default_neighbors
+        affinity_radius = 1.6
+        outlier_factor = 1.5
 
         st.subheader("Visualization")
-        color_by = st.radio(
-            "Color",
-            ["distortion_ratio", "local_area", "manifold_position"],
-            horizontal=False,
+        if raw_df is not None and valid_index is not None:
+            reference_options = ["None"] + raw_df.columns.tolist()
+            reference_default = default_reference_col if default_reference_col in raw_df.columns else "None"
+            reference_choice = st.selectbox(
+                "Hover/color column",
+                reference_options,
+                index=reference_options.index(reference_default),
+                help="Optional uploaded column used only for hover text and the Color by option below.",
+            )
+            meta = apply_reference_column(
+                meta,
+                raw_df,
+                valid_index,
+                None if reference_choice == "None" else reference_choice,
+            )
+        color_options = ["distortion_ratio", "local_area"]
+        if "has_reference" in meta and bool(meta["has_reference"].iloc[0]):
+            color_options.append("reference")
+        reference_name = str(meta["reference_name"].iloc[0]) if "reference_name" in meta else "selected column"
+        color_by = st.selectbox(
+            "Color by",
+            color_options,
+            format_func=lambda key: reference_name if key == "reference" else COLOR_LABELS[key],
             help="Choose what point color represents in the embedding plot.",
         )
-        st.caption(COLOR_HELP[color_by])
-        if n_components == 2:
-            show_ellipsoids = False
-            ellipse_stride = st.slider(
-                "Ellipse density",
-                1,
-                12,
-                5,
-                help="Subsampling rate for displayed metric glyphs. Smaller values draw more glyphs; larger values reduce clutter.",
-            )
-            ellipse_scale = st.slider(
-                "Ellipse scale",
-                0.01,
-                0.16,
-                0.05,
-                step=0.01,
-                help="Visual scale factor for ellipses. This does not change the computed distortion values.",
-            )
+        if color_by == "reference":
+            st.caption(f"Color shows `{reference_name}`. Numeric columns use a continuous scale; categorical columns use distinct colors.")
         else:
-            show_ellipsoids = st.toggle(
-                "Show 3D ellipsoid glyphs",
-                value=False,
-                help="Draw a sparse set of translucent ellipsoids summarizing the local 3D metric. This can make the plot slower.",
-            )
+            st.caption(COLOR_HELP[color_by])
+        if n_components == 2:
+            show_ellipsoids = True
+            ellipse_stride = 5
+            ellipse_scale = 0.05
+            max_ellipsoids = 45
+        else:
+            show_ellipsoids = True
             st.caption(
                 "3D mode uses point color and broken-neighborhood links to show distortion. "
-                "Optional ellipsoids show the local 3D metric, but can add visual clutter."
+                "Ellipsoids show the local 3D metric, but can add visual clutter."
             )
-            ellipse_stride = st.slider(
-                "Ellipsoid density",
-                4,
-                30,
-                12,
-                help="Subsampling rate for displayed 3D ellipsoids. Larger values draw fewer ellipsoids.",
+            ellipse_stride = 1
+            ellipse_scale = 0.12
+            max_ellipsoids = 24
+        show_links = True
+        with st.expander("Advanced controls", expanded=False):
+            if embedding_method == "t-SNE":
+                max_perplexity = max(5, min(80, (x.shape[0] - 1) // 3))
+                perplexity = st.slider(
+                    "t-SNE perplexity",
+                    5,
+                    max_perplexity,
+                    min(30, max_perplexity),
+                    help="t-SNE neighborhood scale. Higher values make t-SNE consider broader neighborhoods.",
+                )
+            n_neighbors = st.slider(
+                "Local neighborhood size",
+                min_neighbors,
+                max_neighbors,
+                default_neighbors,
+                help=(
+                    "Number of nearest neighbors in the original data used to estimate local geometry "
+                    "and flag broken neighbor links. For Isomap and UMAP, this same value also controls "
+                    "the embedding neighborhood size."
+                ),
             )
-            ellipse_scale = st.slider(
-                "Ellipsoid scale",
-                0.01,
-                0.20,
-                0.04,
-                step=0.01,
-                help="Visual scale factor for 3D ellipsoids. This does not change the computed distortion values.",
+            affinity_radius = st.slider(
+                "Affinity radius",
+                0.2,
+                5.0,
+                affinity_radius,
+                step=0.1,
+                help="Radius for the Gaussian affinity kernel used when constructing the original-space graph Laplacian.",
             )
-        show_links = st.toggle(
-            "Show broken neighborhood links",
-            value=True,
-            help="Show orange lines for original-space neighbors that are unusually far apart in the embedding.",
-        )
+            outlier_factor = st.slider(
+                "Broken-link sensitivity",
+                0.5,
+                4.0,
+                outlier_factor,
+                step=0.1,
+                help="Controls the boxplot-style outlier threshold for flagged neighbor links. Smaller values flag more links.",
+            )
+            show_ellipsoids = st.toggle(
+                "Show metric glyphs",
+                value=show_ellipsoids,
+                help="Draw ellipses or ellipsoids summarizing the local Riemannian metric.",
+            )
+            if show_ellipsoids and n_components == 2:
+                ellipse_stride = st.slider(
+                    "Ellipse density",
+                    1,
+                    12,
+                    ellipse_stride,
+                    help="Subsampling rate for displayed metric glyphs. Smaller values draw more glyphs; larger values reduce clutter.",
+                )
+                ellipse_scale = st.slider(
+                    "Ellipse scale",
+                    0.01,
+                    0.16,
+                    ellipse_scale,
+                    step=0.01,
+                    help="Visual scale factor for ellipses. This does not change the computed distortion values.",
+                )
+            elif show_ellipsoids:
+                max_ellipsoids = st.slider(
+                    "Ellipsoids shown",
+                    0,
+                    45,
+                    max_ellipsoids,
+                    help="Maximum number of local metric ellipsoids drawn in the 3D plot.",
+                )
+                st.caption(
+                    "Ellipsoids are drawn from evenly spaced samples. The app limits this number because "
+                    "3D ellipsoids are expensive to render, so drawing one for every point can make the browser slow."
+                )
+                ellipse_scale = st.slider(
+                    "Ellipsoid scale",
+                    0.03,
+                    0.30,
+                    ellipse_scale,
+                    step=0.01,
+                    help="Visual scale factor for 3D ellipsoids. This does not change the computed distortion values.",
+                )
+            show_links = st.toggle(
+                "Show broken neighborhood links",
+                value=show_links,
+                help="Show orange lines for original-space neighbors that are unusually far apart in the embedding.",
+            )
 
 if stage == "Upload raw data" and x is None:
-    st.subheader("Upload raw data")
-    st.write(
-        "Use this workflow when you have original data but do not already have an embedding. "
-        f"The app will compute a {n_components}D embedding from your selected original feature columns, then evaluate its distortions."
-    )
-    st.markdown(
-        """
-        **Required format**
-        - Rows are samples.
-        - Numeric feature columns define the original data space.
-        - An optional label/reference column is used only for coloring and tooltips.
-        - Embedding coordinates are not required in this workflow.
-        """
-    )
-    st.download_button(
-        "Download synthetic raw data example",
-        data=example_csv_bytes(str(RAW_DATA_EXAMPLE_PATH)),
-        file_name="raw_swiss_roll_example.csv",
-        mime="text/csv",
-        help="Download a 240-row synthetic Swiss roll table showing the expected raw data format.",
-    )
-    st.dataframe(example_preview(str(RAW_DATA_EXAMPLE_PATH)), width="stretch")
+    render_raw_upload_guide(n_components)
     st.stop()
 
 if stage == "Evaluate my embedding" and x is None:
-    st.subheader("Evaluate my embedding")
-    st.write(
-        f"Use this workflow when you already computed a {n_components}D embedding elsewhere. "
-        "The app will not recompute the embedding; it will evaluate the one you upload."
-    )
-    st.markdown(
-        """
-        **Required format**
-        - Rows are samples.
-        - Original feature columns define the high-dimensional data space.
-        - Embedding columns define the layout to evaluate. Use the sidebar to choose 2D or 3D.
-        - An optional label/reference column is used only for coloring and tooltips.
-        """
-    )
-    st.download_button(
-        "Download synthetic embedding example",
-        data=example_csv_bytes(str(EMBEDDING_DATA_EXAMPLE_PATH)),
-        file_name="existing_embedding_swiss_roll_example.csv",
-        mime="text/csv",
-        help="Download a 240-row synthetic Swiss roll table with raw features plus existing Isomap coordinates.",
-    )
-    st.dataframe(example_preview(str(EMBEDDING_DATA_EXAMPLE_PATH)), width="stretch")
+    render_embedding_upload_guide(n_components)
     st.stop()
 
 try:
@@ -1042,4 +1391,4 @@ except ImportError as exc:
     st.error(str(exc))
     st.stop()
 
-render_results(metrics, links, color_by, ellipse_stride, ellipse_scale, show_links, show_ellipsoids, feature_export)
+render_results(metrics, links, color_by, ellipse_stride, ellipse_scale, show_links, show_ellipsoids, max_ellipsoids, feature_export)
