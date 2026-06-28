@@ -679,11 +679,13 @@ def render_downloads_and_citations() -> None:
         "For larger private datasets, download a portable version and run the app locally. "
         "No Python package installation is needed after unzipping."
     )
-    c1, c2 = st.columns(2)
-    with c1:
-        st.link_button("Download Windows zip", f"{RELEASE_BASE_URL}/DistortionsDemo_Windows.zip")
-    with c2:
-        st.link_button("Download macOS zip", f"{RELEASE_BASE_URL}/DistortionsDemo_macOS.zip")
+    st.markdown("**Windows**")
+    st.link_button("Download Windows zip", f"{RELEASE_BASE_URL}/DistortionsDemo_Windows.zip")
+    st.caption("After downloading, unzip the file and run `Start Distortions Demo.bat`.")
+
+    st.markdown("**macOS**")
+    st.link_button("Download macOS zip", f"{RELEASE_BASE_URL}/DistortionsDemo_macOS.zip")
+    st.caption("After downloading, unzip the file and open `Start Distortions Demo.command`.")
     with st.expander("macOS security warning help", expanded=False):
         st.markdown(
             """
